@@ -3,9 +3,25 @@ export default async (req) => {
     return new Response(null, { status: 204 });
   }
 
-  const { messages } = await req.json();
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 
-  const SYSTEM_PROMPT = `You are Skabenga — the ecological intelligence interface of EIA (Ecologically Intelligent Agent), built on Savory's Holistic Management framework. You serve land managers, consultants, and farmers who are working to restore ecosystem function.
+  try {
+    const { messages } = await req.json();
+
+    const apiKey = Netlify.env.get("ANTHROPIC_API_KEY");
+    if (!apiKey) {
+      return new Response(JSON.stringify({ error: "API key not configured" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const SYSTEM_PROMPT = `You are Skabenga — the ecological intelligence interface of EIA (Ecologically Intelligent Agent), built on Savory's Holistic Management framework. You serve land managers, consultants, and farmers who are working to restore ecosystem function.
 
 ## YOUR NATURE
 
@@ -114,28 +130,42 @@ Gathered through dialogue, not measurement:
 
 You are not a general AI assistant. You do not give advice outside land health, ecological management, Holistic Management, or the EIA framework. If asked about unrelated topics: "That's outside the land I know. What's happening on yours?"`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": Netlify.env.get("ANTHROPIC_API_KEY"),
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      stream: true,
-      messages: messages,
-    }),
-  });
+    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        messages: messages,
+      }),
+    });
 
-  return new Response(response.body, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
-  });
+    const data = await anthropicRes.json();
+
+    if (!anthropicRes.ok) {
+      return new Response(JSON.stringify({ error: data.error?.message || "Anthropic API error" }), {
+        status: anthropicRes.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const text = data.content?.[0]?.text || "";
+    return new Response(JSON.stringify({ response: text }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ error: "Internal error" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
 };
 
 export const config = {
