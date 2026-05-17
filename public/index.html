@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skabenga · EIA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --soil:   #191410;
+      --loam:   #2a2016;
+      --bark:   #3a2d1c;
+      --lichen: #574a32;
+      --stone:  #887862;
+      --dust:   #b4a58a;
+      --grass:  #c4b474;
+      --sky:    #d0c5a4;
+      --mist:   #ece4ce;
+      --seed:   #76986a;
+      --shoot:  #567a4e;
+      --river:  #6588a0;
+    }
+
+    html, body { height: 100%; background: var(--soil); color: var(--mist); font-family: 'Cormorant Garamond', serif; overflow: hidden; }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      opacity: 0.035;
+      pointer-events: none;
+      z-index: 999;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+      max-width: 740px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    header {
+      padding: 26px 0 18px;
+      border-bottom: 1px solid rgba(180,165,138,0.14);
+      display: flex;
+      align-items: baseline;
+      gap: 18px;
+    }
+
+    .wordmark {
+      font-size: 0.95rem;
+      font-weight: 300;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      color: var(--dust);
+    }
+    .wordmark span { color: var(--seed); }
+
+    .tagline {
+      font-size: 0.82rem;
+      font-style: italic;
+      color: var(--lichen);
+      font-weight: 300;
+    }
+
+    .messages {
+      overflow-y: auto;
+      padding: 32px 0 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 32px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--bark) transparent;
+    }
+    .messages::-webkit-scrollbar { width: 2px; }
+    .messages::-webkit-scrollbar-thumb { background: var(--bark); }
+
+    .welcome {
+      display: flex;
+      flex-direction: column;
+      gap: 36px;
+      animation: fadeUp 0.9s ease both;
+    }
+
+    .welcome-quote {
+      font-size: 1.7rem;
+      font-weight: 300;
+      line-height: 1.55;
+      color: var(--sky);
+      font-style: italic;
+      max-width: 500px;
+    }
+    .welcome-quote em { color: var(--grass); font-style: normal; font-weight: 400; }
+
+    .prompts { display: flex; flex-direction: column; gap: 9px; }
+
+    .prompt-label {
+      font-size: 0.67rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--lichen);
+      margin-bottom: 4px;
+      font-family: 'DM Mono', monospace;
+      font-weight: 300;
+    }
+
+    .prompt-btn {
+      background: none;
+      border: 1px solid rgba(87,74,50,0.45);
+      color: var(--dust);
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.98rem;
+      font-style: italic;
+      padding: 11px 16px;
+      cursor: pointer;
+      text-align: left;
+      border-radius: 2px;
+      transition: all 0.2s ease;
+      line-height: 1.4;
+    }
+    .prompt-btn:hover {
+      border-color: var(--seed);
+      color: var(--mist);
+      background: rgba(118,152,106,0.07);
+      transform: translateX(3px);
+    }
+
+    .message { display: flex; flex-direction: column; gap: 7px; animation: fadeUp 0.4s ease both; }
+
+    .message-role {
+      font-size: 0.63rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      font-family: 'DM Mono', monospace;
+      font-weight: 300;
+    }
+    .message.user .message-role { color: var(--stone); }
+    .message.assistant .message-role { color: var(--seed); }
+
+    .message-content { font-size: 1.08rem; font-weight: 300; line-height: 1.78; }
+    .message.user .message-content { color: var(--sky); font-style: italic; }
+    .message.assistant .message-content { color: var(--mist); }
+
+    .message-content strong { color: var(--grass); font-weight: 500; font-style: normal; }
+    .message-content em { color: var(--dust); }
+    .message-content p { margin-bottom: 0.8em; }
+    .message-content p:last-child { margin-bottom: 0; }
+    .message-content ul { padding-left: 1.2em; margin-bottom: 0.8em; }
+    .message-content li { margin-bottom: 0.35em; }
+    .message-content h1, .message-content h2, .message-content h3 {
+      color: var(--grass);
+      font-weight: 400;
+      margin: 0.6em 0 0.4em;
+    }
+
+    .cursor {
+      display: inline-block;
+      width: 2px;
+      height: 0.9em;
+      background: var(--seed);
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    .input-area {
+      padding: 16px 0 26px;
+      border-top: 1px solid rgba(180,165,138,0.11);
+    }
+
+    .input-row { display: flex; gap: 12px; align-items: flex-end; }
+
+    textarea {
+      flex: 1;
+      background: rgba(42,32,22,0.65);
+      border: 1px solid rgba(87,74,50,0.38);
+      border-radius: 3px;
+      color: var(--mist);
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.02rem;
+      font-weight: 300;
+      line-height: 1.6;
+      padding: 11px 16px;
+      resize: none;
+      outline: none;
+      min-height: 46px;
+      max-height: 140px;
+      transition: border-color 0.2s;
+    }
+    textarea::placeholder { color: var(--lichen); font-style: italic; }
+    textarea:focus { border-color: rgba(118,152,106,0.5); }
+
+    .send-btn {
+      background: var(--shoot);
+      border: none;
+      border-radius: 3px;
+      width: 44px;
+      height: 44px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.2s;
+      color: var(--mist);
+    }
+    .send-btn:hover { background: var(--seed); }
+    .send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .send-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+    .footer-note {
+      margin-top: 9px;
+      font-size: 0.67rem;
+      color: var(--lichen);
+      font-family: 'DM Mono', monospace;
+      font-weight: 300;
+      letter-spacing: 0.06em;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 580px) {
+      .app { padding: 0 16px; }
+      .welcome-quote { font-size: 1.35rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="wordmark">Skabenga · <span>EIA</span></div>
+    <div class="tagline">Ecologically Intelligent Agent</div>
+  </header>
+
+  <div class="messages" id="messages">
+    <div class="welcome" id="welcome">
+      <div class="welcome-quote">
+        The land is always <em>speaking</em>.<br>
+        The question is whether<br>
+        we know how to listen.
+      </div>
+      <div class="prompts">
+        <div class="prompt-label">Where would you like to begin?</div>
+        <button class="prompt-btn" onclick="usePrompt(this)">What are the four ecosystem processes and why do they matter?</button>
+        <button class="prompt-btn" onclick="usePrompt(this)">How do I know if my land is overrested or overgrazed?</button>
+        <button class="prompt-btn" onclick="usePrompt(this)">Walk me through the EOV monitoring approach.</button>
+        <button class="prompt-btn" onclick="usePrompt(this)">What is the brittleness scale and how does it change my decisions?</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <div class="input-row">
+      <textarea id="input" placeholder="Ask Skabenga about your land…" rows="1"
+        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+      </button>
+    </div>
+    <div class="footer-note">Holistic Management · EOV 3.0 · ecoregion.net</div>
+  </div>
+</div>
+
+<script>
+  const messagesEl = document.getElementById('messages');
+  const inputEl    = document.getElementById('input');
+  const sendBtn    = document.getElementById('sendBtn');
+  let welcome      = document.getElementById('welcome');
+  let history      = [];
+  let streaming    = false;
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  function usePrompt(btn) {
+    inputEl.value = btn.textContent;
+    autoResize(inputEl);
+    sendMessage();
+  }
+
+  function appendMessage(role, content = '') {
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    const id = 'mc-' + Date.now() + Math.random();
+    div.innerHTML = `<div class="message-role">${role === 'user' ? 'You' : 'Skabenga'}</div><div class="message-content" id="${id}">${content}</div>`;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div.querySelector('.message-content');
+  }
+
+  function md(text) {
+    let t = text
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // Lists
+    const lines = t.split('\n');
+    let result = [];
+    let inList = false;
+    for (const line of lines) {
+      const li = line.match(/^[-*] (.+)$/);
+      if (li) {
+        if (!inList) { result.push('<ul>'); inList = true; }
+        result.push(`<li>${li[1]}</li>`);
+      } else {
+        if (inList) { result.push('</ul>'); inList = false; }
+        result.push(line);
+      }
+    }
+    if (inList) result.push('</ul>');
+
+    // Paragraphs
+    return result.join('\n')
+      .split(/\n\n+/)
+      .map(p => p.trim())
+      .filter(p => p)
+      .map(p => p.startsWith('<') ? p : `<p>${p.replace(/\n/g, ' ')}</p>`)
+      .join('');
+  }
+
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text || streaming) return;
+
+    if (welcome) { welcome.remove(); welcome = null; }
+
+    history.push({ role: 'user', content: text });
+    appendMessage('user', text);
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    sendBtn.disabled = true;
+    streaming = true;
+
+    const contentEl = appendMessage('assistant');
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    contentEl.appendChild(cursor);
+
+    let raw = '';
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(data);
+            if (evt.type === 'content_block_delta' && evt.delta?.text) {
+              raw += evt.delta.text;
+              contentEl.innerHTML = md(raw);
+              contentEl.appendChild(cursor);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } catch {}
+        }
+      }
+    } catch {
+      contentEl.innerHTML = '<em>Something went wrong. Please try again.</em>';
+    }
+
+    cursor.remove();
+    history.push({ role: 'assistant', content: raw });
+    streaming = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+</script>
+</body>
+</html>

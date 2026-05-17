@@ -1,0 +1,8 @@
+{
+  "name": "hm-eia",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@netlify/functions": "^2.8.1"
+  }
+}

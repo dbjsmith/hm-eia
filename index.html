@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EIA</title><style>
+*{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}body{font-family:-apple-system,sans-serif;font-size:14px;background:#f5f5f0;color:#1a1a1a;overflow:hidden}
+#app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#cols{display:flex;flex-direction:row;flex:1;min-height:0;gap:0;align-items:stretch}
+#cols>.card{flex:1 1 0;min-width:0;height:100%;margin:10px 6px;overflow-y:auto;min-height:0}
+#cols>.card:first-child{margin-left:12px}
+#cols>.card:last-child{margin-right:12px}
+@media (max-width:720px){#cols{flex-direction:column;overflow-y:auto}#cols>.card{flex:0 0 auto;height:auto;overflow:visible;margin:6px 12px}#cols>.card:first-child{margin-top:10px}#cols>.card:last-child{margin-bottom:10px}}
+#hdr{background:#0f6e56;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px}
+#hdr h1{font-size:15px;font-weight:600}#hs{font-size:12px;opacity:.8;margin-left:auto}
+#sd{width:8px;height:8px;border-radius:50%;background:#fff;opacity:.5;flex-shrink:0}
+#sd.on{opacity:1;background:#7fff7f}#sd.er{background:#ff6b6b;opacity:1}
+#dn{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;margin:12px;padding:10px;font-size:13px;color:#856404}
+.card{background:#fff;border-radius:10px;margin:10px 12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.ch{padding:12px 14px;border-bottom:1px solid #eee;display:flex;align-items:center;gap:8px}
+.ch h2{font-size:13px;font-weight:600;color:#333;flex:1}.cb{padding:14px}
+.bx{display:none;font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;background:#e8f5f0;color:#0f6e56}
+.rg{width:18px;height:18px;border:2px solid #eee;border-top-color:#0f6e56;border-radius:50%;animation:sp .7s linear infinite;display:inline-block}
+@keyframes sp{to{transform:rotate(360deg)}}
+.wt{display:flex;align-items:center;gap:8px;color:#888;font-size:13px;padding:8px 0}
+#svl{list-style:none}
+#svl li{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-bottom:1px solid #f0f0f0;font-size:12px;color:#555}
+#svl li:last-child{border:none}
+.dt{width:7px;height:7px;border-radius:50%;background:#0f6e56;flex-shrink:0;margin-top:4px}
+.sl{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
+.sla{font-size:12px;color:#333;font-weight:500;line-height:1.3}
+.slb{font-size:11px;color:#999}
+.sd{font-size:10px;color:#0f6e56;font-weight:600}
+/* Grouped area display */
+.gh{display:flex !important;align-items:center;gap:6px;padding:10px 0 5px !important;border:none !important;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#0f6e56;margin-top:6px}
+.gh:first-child{margin-top:0}
+.gn{flex:1}
+.gc{font-size:10px;background:#e8f5f0;padding:2px 7px;border-radius:9px;font-weight:600}
+.gs{padding-left:6px !important}
+.gm{color:#aaa;font-style:italic;font-size:11px;padding:4px 0 8px 14px !important;border:none !important}
+.sr{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+#skn{font-size:13px;color:#444;line-height:1.65;margin-bottom:16px;font-style:italic;padding:10px 12px;background:#f7faf8;border-left:3px solid #0f6e56;border-radius:0 6px 6px 0}
+.qsh{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#0f6e56;padding:14px 0 6px;border-top:1px solid #f0f0f0;margin-top:6px}
+.qsh:first-child{border-top:none;margin-top:0;padding-top:0}
+/* User-submitted question styling: same as Skabenga's but with a different accent */
+.sq.user .sno{background:#e07c00}
+/* Ask Skabenga input form */
+#skask{padding:10px 0 4px}
+#skask textarea{width:100%;min-height:54px;max-height:160px;padding:10px 12px;font:inherit;font-size:13px;line-height:1.5;color:#333;background:#fff;border:1px solid #ddd;border-radius:8px;resize:vertical;transition:border-color .15s,box-shadow .15s;font-family:inherit}
+#skask textarea:focus{outline:none;border-color:#0f6e56;box-shadow:0 0 0 2px rgba(15,110,86,0.15)}
+#skask textarea::placeholder{color:#aaa;font-style:italic}
+.skask-row{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:8px}
+.skask-hint{font-size:11px;color:#999;flex:1}
+#skaskbtn{font:inherit;font-size:12px;font-weight:600;padding:7px 16px;background:#0f6e56;color:#fff;border:none;border-radius:6px;cursor:pointer;transition:background .15s}
+#skaskbtn:hover:not(:disabled){background:#0d5d4a}
+#skaskbtn:disabled{background:#bbb;cursor:not-allowed}
+.sq{display:flex;flex-direction:column;border-bottom:1px solid #f0f0f0;transition:background .15s}
+.sq:last-child{border:none}
+.sq:hover{background:#fafaf7}
+.sq.open{background:#fafaf7}
+.sqh{display:flex;gap:10px;padding:11px 12px;align-items:flex-start;cursor:pointer;user-select:none}
+.sno{width:22px;height:22px;border-radius:50%;background:#0f6e56;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.st{font-size:13px;color:#333;line-height:1.5;flex:1;min-width:0}
+.qlens{display:inline-block;font-size:10px;font-weight:600;color:#0f6e56;background:#e8f5f0;padding:2px 8px;border-radius:10px;margin-bottom:6px;letter-spacing:0.3px}
+.qtext{font-size:13px;color:#222;line-height:1.5;font-weight:500}
+.qfarmer{font-size:11px;color:#888;margin-top:4px;font-style:italic}
+.sca{font-size:14px;color:#0f6e56;flex-shrink:0;transition:transform .2s;line-height:1;margin-top:4px}
+.sq.open .sca{transform:rotate(90deg)}
+.sqa{display:none;padding:0 12px 14px 44px;font-size:13px;color:#444;line-height:1.6}
+.sq.open .sqa{display:block}
+.sqa.loading{color:#888;font-style:italic;display:flex;align-items:center;gap:8px}
+.sqa.err{color:#c0392b;font-size:12px;font-style:italic}
+#dbp{display:none;margin:10px 12px;background:#1a1a1a;border-radius:8px}
+#dbp summary{color:#7fff7f;font-family:monospace;font-size:12px;padding:8px 12px;cursor:pointer;list-style:none}
+#dbl{padding:0 12px 12px;max-height:400px;overflow-y:auto}
+.dk{color:#7eb8f7;font-family:monospace;font-size:11px}.dv{color:#ccc;font-family:monospace;font-size:11px;word-break:break-all;margin-bottom:4px}
+#erl{color:#ff6b6b;font-family:monospace;font-size:11px;padding:0 12px 8px}
+</style></head><body>
+<div id="app">
+<div id="hdr"><div id="sd"></div><h1>EIA v3.7</h1><span id="hs"></span></div>
+<div id="dn"><strong>Outside GeoDataTrack</strong> - Waiting for host:init.</div>
+
+<div id="cols">
+<!-- Surveys -->
+<details class="card" open><summary class="ch"><h2>Surveys</h2><span id="svb" class="bx"></span></summary><div class="cb">
+<div id="svw" class="wt"><div class="rg"></div><span>Waiting...</span></div>
+<ul id="svl" style="display:none"></ul>
+</div></details>
+
+<!-- EIA Insights -->
+<details class="card" open><summary class="ch"><h2>EIA Insights</h2><span id="skb" class="bx"></span></summary><div class="cb">
+<div id="skw" class="wt"><div class="rg"></div><span>Waiting...</span></div>
+<div id="skl" style="display:none" class="wt"><div class="rg"></div><span>Generating insights...</span></div>
+<div id="skc" style="display:none">
+<p id="skn"></p>
+<div class="qsh">Skabenga's questions for this context</div>
+<div id="skq"></div>
+<div class="qsh">Deeper questions</div>
+<div id="skfq"></div>
+<div id="skuserwrap" style="display:none">
+<div class="qsh">Your questions</div>
+<div id="skuserq"></div>
+</div>
+<div class="qsh">Ask Skabenga your own question</div>
+<div id="skask">
+<textarea id="skaskinput" placeholder="What would you like to ask Skabenga about this property's monitoring data?" rows="2"></textarea>
+<div class="skask-row">
+<span class="skask-hint">Press Enter to submit · Shift+Enter for a new line</span>
+<button id="skaskbtn" type="button">Ask Skabenga</button>
+</div>
+</div>
+</div>
+</div></details>
+</div>
+
+<!-- Debug -->
+<details id="dbp"><summary>Debug log</summary><div id="erl"></div><div id="dbl"></div></details>
+</div>
+<script>
+(function(){
+var C=null;
+var GDT_ORIGIN='';
+function g(s){return document.getElementById(s);}
+function e(v){return String(v||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function ss(c,l){g('sd').className=c;g('hs').textContent=l||'';}
+function log(k,v){g('dbp').style.display='block';var d=document.createElement('div');d.innerHTML='<div class="dk">'+e(k)+'<\/div><div class="dv">'+e(JSON.stringify(v))+'<\/div>';g('dbl').appendChild(d);}
+function err(m){g('erl').textContent+='[ERR] '+m+'\n';g('dbp').style.display='block';}
+
+function resolveBase(){
+  var base=C.api_base||'/api/v1';
+  if(base.charAt(0)==='/'){
+    // Relative — prefix with the GDT origin captured from the host:init postMessage
+    var origin=GDT_ORIGIN||document.referrer.replace(/\/[^/]*$/,'').replace(/\/$/,'');
+    return (origin||'https://geodatatrack-dev.phpbucket.net')+base;
+  }
+  return base;
+}
+
+function proxy(path,params){
+  var base=resolveBase();
+  var proxyUrl='https://hm-eia.netlify.app/.netlify/functions/gdt-proxy';
+  return fetch(proxyUrl,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({path:path,params:params||{},token:C.access_token,base:base})
+  }).then(function(r){
+    var status=r.status;
+    return r.text().then(function(txt){
+      log('proxy['+path+']',{status:status,body:txt.substring(0,200)});
+      if(!txt)throw new Error('Empty (HTTP '+status+')');
+      var d;try{d=JSON.parse(txt);}catch(ex){throw new Error('Non-JSON '+status+': '+txt.substring(0,80));}
+      if(d&&d.http_response_code&&d.http_response_code>=400)throw new Error(d.error||'GDT err '+d.http_response_code);
+      if(status>=400)throw new Error((d&&(d.error||d.message))||'HTTP '+status);
+      return d;
+    });
+  });
+}
+
+// ── GDT Hierarchy: Org → Property → Area → Survey ──
+// (No /oauth/geopoints endpoint exists; geopoint apikey is just another scope key.)
+// GDT scopes /oauth/surveys based on which apikey is provided in the params.
+// We send the appropriate parameter name for each level and let GDT scope correctly.
+
+function getSurveys(p,lbl){
+  return proxy('/oauth/surveys',p)
+    .then(function(r){
+      var l=r.list||r.surveys||r.data||r.results||r.items||[];
+      l.forEach(function(s){s._from=lbl;});
+      log('surveys:'+lbl,l.length);
+      // Log first survey shape once so we can see field names
+      if(l.length&&!window._surveyShapeLogged){
+        window._surveyShapeLogged=true;
+        log('survey-shape',Object.keys(l[0]).slice(0,15));
+      }
+      return l;
+    })
+    .catch(function(x){err('sv['+lbl+']: '+x.message);return[];});
+}
+
+// Filter surveys to only those matching the requested context.
+// GDT may return ancestor data, so we enforce scoping client-side as a safety net.
+function scopeSurveys(surveys,kind,ak){
+  if(!surveys.length)return surveys;
+  // GDT survey fields: property_apikey, area_apikey, point_apikey
+  var field=null;
+  if(kind==='property')field='property_apikey';
+  else if(kind==='area')field='area_apikey';
+  else if(kind==='geopoint'||kind==='point')field='point_apikey';
+  else if(kind==='survey')field='_apikey';
+  if(!field)return surveys; // org: no filter
+
+  var hasField=surveys.some(function(s){return s[field]!==undefined;});
+  if(!hasField){log('scope-skip',{field:field});return surveys;}
+
+  var filtered=surveys.filter(function(s){return s[field]===ak;});
+  log('scope-filter',{kind:kind,field:field,before:surveys.length,after:filtered.length});
+  return filtered;
+}
+
+function fetchSurveys(nav){
+  var kind=(nav.kind||'org').toLowerCase();
+  var ak=nav.context_apikey||nav.apikey||nav._apikey||'';
+  log('ctx',{kind:kind,ak:ak?ak.substring(0,8)+'...':'MISSING',label:nav.label});
+  if(!ak){err('No apikey in context');return Promise.resolve([]);}
+
+  // Strategy: Use _apikey to get ALL surveys in the org/property tree (broadest scope),
+  // then client-side filter using the survey's own parent fields to enforce strict
+  // hierarchical scoping (property → area → geopoint → survey).
+  return getSurveys({_apikey:ak},kind).then(function(d){
+    return scopeSurveys(d,kind,ak);
+  });
+}
+
+function fetchAnswers(surveys){
+  if(!surveys.length)return Promise.resolve({});
+  return Promise.all(surveys.map(function(s){
+    var k=s._apikey||s.apikey;
+    if(!k)return Promise.resolve({k:'',ans:[]});
+    return proxy('/oauth/answers',{survey_apikey:k}).then(function(r){
+      var raw=r.list||r.answers||r.data||r.results||(Array.isArray(r)?r:[]);
+      var ans=raw.map(function(a){
+        // GDT field names: question_name (the question), answerISsmallplaintextbox / answerISbigtextarea (the value)
+        var q=a.question_name||a.question||a.question_label||a.key||'';
+        var v=a.answerISsmallplaintextbox;
+        if(v===null||v===undefined||v==='')v=a.answerISbigtextarea;
+        if(v===null||v===undefined||v==='')v=a.answer!==undefined?a.answer:a.value;
+        var hasValue=v!==null&&v!==undefined&&String(v).trim()!=='';
+        return{
+          question:q,
+          answer:v,
+          answer_type:a.answer_type||'',
+          status:hasValue?'answered':'unanswered'
+        };
+      });
+      return{k:k,ans:ans};
+    }).catch(function(x){err('ans['+k+']: '+x.message);return{k:k,ans:[]};});
+  })).then(function(rs){
+    var b={};rs.forEach(function(r){if(r.k)b[r.k]=r.ans;});
+    var tot=Object.values(b).reduce(function(n,a){return n+a.length;},0);
+    var ansCount=Object.values(b).reduce(function(n,a){return n+a.filter(function(x){return x.status==='answered';}).length;},0);
+    log('answers',{total:tot,answered:ansCount});
+    return b;
+  });
+}
+
+// Extract date from survey name (looks for YYYYMMDD or YYYYMMDDHHMM patterns)
+function parseSurveyDate(s){
+  if(s&&s.name){
+    var m=s.name.match(/(20\d{6})(\d{4})?/);
+    if(m){
+      var d=m[1],t=m[2]||'0000';
+      var dt=new Date(
+        parseInt(d.substr(0,4),10),
+        parseInt(d.substr(4,2),10)-1,
+        parseInt(d.substr(6,2),10),
+        parseInt(t.substr(0,2),10),
+        parseInt(t.substr(2,2),10)
+      );
+      if(!isNaN(dt.getTime()))return dt;
+    }
+  }
+  // Fallback: numeric _id (higher = newer)
+  if(s&&s._id){
+    var n=parseInt(s._id,10);
+    if(!isNaN(n))return new Date(2000,0,1,0,0,n);
+  }
+  return null;
+}
+
+function fmtDate(dt){
+  if(!dt)return '';
+  return dt.toLocaleDateString('en-AU',{year:'numeric',month:'short',day:'numeric'});
+}
+
+function renderSurveys(sv){
+  g('svw').style.display='none';
+  g('svl').style.display='block';
+  var b=g('svb');b.style.display='inline-flex';
+  b.textContent=sv.length+' survey'+(sv.length===1?'':'s');
+  g('svl').innerHTML='';
+  if(!sv.length){
+    g('svl').innerHTML='<li style="color:#aaa;font-style:italic;padding:8px 0">No surveys found<\/li>';
+    return;
+  }
+
+  // Attach parsed date to each survey
+  sv.forEach(function(s){s._date=parseSurveyDate(s);});
+
+  // Group by area_name (with stable area key fallback)
+  var groups={};
+  sv.forEach(function(s){
+    var key=s.area_name||(s.area_apikey?'Area '+s.area_apikey.substring(0,6):'(Property level)');
+    if(!groups[key])groups[key]={surveys:[],latest:0};
+    groups[key].surveys.push(s);
+    var t=s._date?s._date.getTime():0;
+    if(t>groups[key].latest)groups[key].latest=t;
+  });
+
+  // Sort group names by most-recent-activity desc, with property-level last
+  var groupNames=Object.keys(groups).sort(function(a,b){
+    if(a==='(Property level)')return 1;
+    if(b==='(Property level)')return -1;
+    return groups[b].latest-groups[a].latest;
+  });
+
+  var perGroup=10; // surveys shown per area
+  groupNames.forEach(function(gname){
+    var grp=groups[gname];
+    var sorted=grp.surveys.sort(function(a,b){
+      var ta=a._date?a._date.getTime():0;
+      var tb=b._date?b._date.getTime():0;
+      return tb-ta; // newest first
+    });
+
+    // Group header
+    var h=document.createElement('li');
+    h.className='gh';
+    h.innerHTML='<span class="gn">'+e(gname)+'<\/span><span class="gc">'+sorted.length+'<\/span>';
+    g('svl').appendChild(h);
+
+    // Surveys in this group
+    sorted.slice(0,perGroup).forEach(function(s){
+      var li=document.createElement('li');
+      li.className='gs';
+      var name=s.name||s.label||s._apikey||'?';
+      var dateStr=fmtDate(s._date);
+      var subParts=[];
+      if(s.point_name)subParts.push(s.point_name);
+      if(s.survey_status)subParts.push(s.survey_status);
+      var sub=subParts.length?'<span class="slb">'+e(subParts.join(' · '))+'<\/span>':'';
+      var dateBlock=dateStr?'<span class="sd">'+e(dateStr)+'<\/span>':'';
+      li.innerHTML='<div class="dt"><\/div><div class="sl"><div class="sr"><span class="sla">'+e(name)+'<\/span>'+dateBlock+'<\/div>'+sub+'<\/div>';
+      g('svl').appendChild(li);
+    });
+    if(sorted.length>perGroup){
+      var more=document.createElement('li');
+      more.className='gm';
+      more.textContent='…and '+(sorted.length-perGroup)+' more';
+      g('svl').appendChild(more);
+    }
+  });
+}
+
+// Cache of answers we've already fetched, keyed by question text
+var _answerCache={};
+
+function fetchSkabengaAnswer(question, navContext, surveys, answersBySurvey){
+  if(_answerCache[question])return Promise.resolve(_answerCache[question]);
+  return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      mode:'answer',
+      question:question,
+      navigation_context:navContext,
+      surveys:surveys,
+      answers_by_survey:answersBySurvey
+    })
+  }).then(function(r){return r.json();}).then(function(d){
+    _answerCache[question]=d.answer||'No insight available.';
+    return _answerCache[question];
+  });
+}
+
+// Fixed deeper questions — always available, evergreen, holistic-context oriented.
+// These complement Skabenga's dynamic questions with reflective prompts that stay
+// useful regardless of how much data is in the surveys.
+var FIXED_DEEPER_QUESTIONS=[
+  'How does this monitoring data align with — or push against — your holistic context for the farm?',
+  "What's the most important indicator your current surveys don't capture that you wish they did?",
+  'If you had to summarise this property\'s ecological story in three sentences — one for a banker, one for an apprentice, and one for a sceptic — what would each say?'
+];
+
+function buildQuestionItem(q,number,ctx,opts){
+  opts=opts||{};
+  // Support both plain-string questions and the structured object shape
+  // {question, lens, lens_emoji, lens_label, dimension, dimension_label, farmer_value, monitor_value, ei_value, field_method}
+  var qText, qLensEmoji='', qLensLabel='', qFarmerValue='';
+  if(q&&typeof q==='object'){
+    qText=q.question||'';
+    qLensEmoji=q.lens_emoji||'';
+    qLensLabel=q.lens_label||'';
+    qFarmerValue=q.farmer_value||'';
+  }else{
+    qText=String(q||'');
+  }
+
+  var lensTag='';
+  if(qLensEmoji||qLensLabel){
+    var sep=(qLensEmoji&&qLensLabel)?' ':'';
+    lensTag='<div class="qlens">'+e(qLensEmoji)+sep+e(qLensLabel)+'<\/div>';
+  }
+  var farmerSub=qFarmerValue?'<div class="qfarmer">'+e(qFarmerValue)+'<\/div>':'';
+
+  var d=document.createElement('div');
+  d.className='sq'+(opts.userClass?' user':'');
+  d.innerHTML=
+    '<div class="sqh">'+
+      '<div class="sno">'+e(String(number))+'<\/div>'+
+      '<div class="st">'+
+        lensTag+
+        '<div class="qtext">'+e(qText)+'<\/div>'+
+        farmerSub+
+      '<\/div>'+
+      '<div class="sca">▶<\/div>'+
+    '<\/div>'+
+    '<div class="sqa"><\/div>';
+
+  var header=d.querySelector('.sqh');
+  var answerBox=d.querySelector('.sqa');
+  var loaded=false;
+
+  function loadAnswer(){
+    if(loaded)return;
+    answerBox.className='sqa loading';
+    answerBox.innerHTML='<div class="rg"><\/div><span>Skabenga is thinking…<\/span>';
+
+    fetchSkabengaAnswer(qText, ctx.nav, ctx.surveys, ctx.answers).then(function(answer){
+      loaded=true;
+      answerBox.className='sqa';
+      answerBox.textContent=answer;
+    }).catch(function(x){
+      answerBox.className='sqa err';
+      answerBox.textContent='Couldn\'t generate insight: '+x.message;
+    });
+  }
+
+  header.addEventListener('click',function(){
+    var isOpen=d.classList.contains('open');
+    if(isOpen){d.classList.remove('open');return;}
+    d.classList.add('open');
+    loadAnswer();
+  });
+
+  // Auto-expand and load (used for user-submitted questions)
+  if(opts.autoOpen){
+    d.classList.add('open');
+    loadAnswer();
+  }
+
+  return d;
+}
+
+// Counter for user-submitted questions in the current session
+var _userQuestionCount=0;
+
+function submitUserQuestion(){
+  var input=g('skaskinput');
+  var btn=g('skaskbtn');
+  var q=(input.value||'').trim();
+  if(!q)return;
+
+  var ctx=window._skabengaCtx||{};
+  if(!ctx.nav){
+    // Skabenga context not ready yet
+    return;
+  }
+
+  _userQuestionCount++;
+  var label='Q'+_userQuestionCount;
+
+  // Show the user-questions section if this is the first one
+  g('skuserwrap').style.display='block';
+
+  // Build a question item that's already expanded + loading
+  var item=buildQuestionItem(q,label,ctx,{userClass:true,autoOpen:true});
+
+  // Prepend so newest is on top
+  var container=g('skuserq');
+  container.insertBefore(item,container.firstChild);
+
+  // Clear the input + briefly disable button
+  input.value='';
+  btn.disabled=true;
+  setTimeout(function(){btn.disabled=false;},400);
+}
+
+function renderSkabenga(a){
+  g('skl').style.display='none';
+  g('skw').style.display='none';
+  g('skc').style.display='block';
+  g('skb').style.display='inline-flex';
+  g('skb').textContent='AI';
+  g('skn').textContent=a.narrative||'';
+
+  var ctx=window._skabengaCtx||{};
+
+  // Dynamic questions (generated by Skabenga based on this context's data)
+  var qb=g('skq');qb.innerHTML='';
+  (a.questions||[]).forEach(function(q,i){
+    qb.appendChild(buildQuestionItem(q,i+1,ctx));
+  });
+
+  // Fixed deeper questions (always available, regardless of data)
+  var fqb=g('skfq');fqb.innerHTML='';
+  FIXED_DEEPER_QUESTIONS.forEach(function(q,i){
+    var label=String.fromCharCode(65+i); // A/B/C
+    fqb.appendChild(buildQuestionItem(q,label,ctx));
+  });
+
+  // Wire up the Ask Skabenga input (only once)
+  if(!window._skaskWired){
+    window._skaskWired=true;
+    g('skaskbtn').addEventListener('click',submitUserQuestion);
+    g('skaskinput').addEventListener('keydown',function(ev){
+      // Enter submits, Shift+Enter inserts a newline
+      if(ev.key==='Enter'&&!ev.shiftKey){
+        ev.preventDefault();
+        submitUserQuestion();
+      }
+    });
+  }
+}
+
+function boot(){
+  var nav=C.navigation_context||{};
+  ss('on','');
+  if(nav.label)g('hs').textContent=nav.label;
+
+  // Log token details for diagnosis
+  var tok=C.access_token||'';
+  log('token',{length:tok.length,prefix:tok.substring(0,30),startsWithBearer:tok.startsWith('Bearer ')});
+
+
+
+  fetchSurveys(nav).then(function(sv){
+    renderSurveys(sv);
+    ss('on',nav.label||'');
+
+    if(!sv.length){
+      // No surveys — show a holding message in Skabenga
+      g('skw').style.display='none';
+      g('skc').style.display='block';
+      g('skb').style.display='inline-flex';g('skb').textContent='—';
+      g('skn').textContent='No survey data available for this context. Skabenga insights will appear once surveys are completed.';
+      return;
+    }
+
+    // Show Skabenga loading
+    g('skl').style.display='flex';g('skw').style.display='none';
+
+    // Cap surveys sent to Skabenga - take 15 most recent across all areas
+    // (sv is already sorted by area / date in renderSurveys; we sort here for safety)
+    var svSample=sv.slice().sort(function(a,b){
+      var ta=a._date?a._date.getTime():0,tb=b._date?b._date.getTime():0;
+      return tb-ta;
+    }).slice(0,15);
+    log('skab-sample',{total:sv.length,sending:svSample.length});
+
+    // Fetch answers ONLY for the sample, then call Skabenga
+    fetchAnswers(svSample).then(function(by){
+      // Store context for follow-up answer calls when questions are clicked
+      window._skabengaCtx={nav:nav,surveys:svSample,answers:by};
+      return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({mode:'overview',navigation_context:nav,surveys:svSample,answers_by_survey:by})
+      }).then(function(r){return r.text();})
+        .then(function(t){
+          log('eia-analyze-resp',{len:t.length,preview:t.substring(0,150)});
+          var a;try{a=JSON.parse(t);}catch(ex){throw new Error('Non-JSON: '+t.substring(0,100));}
+          renderSkabenga(a);
+        })
+        .catch(function(x){
+          err('analyze:'+x.message);
+          g('skl').style.display='none';
+          renderSkabenga({narrative:'Insight generation unavailable: '+x.message,questions:[]});
+        });
+    });
+
+  }).catch(function(x){ss('er','Error');err('boot:'+x.message);});
+}
+
+var _booted=false;
+window.addEventListener('message',function(ev){
+  if(!ev.data||ev.data.type!=='host:init')return;
+  if(_booted){log('host:init','ignored — already booted');return;}
+  _booted=true;
+  GDT_ORIGIN=ev.origin||'';
+  C=ev.data.payload||null;
+  if(!C||!C.access_token){ss('er','Bad context');_booted=false;return;}
+  log('origin',GDT_ORIGIN);
+  g('dn').hidden=true;
+  boot();
+});
+
+if(window.parent&&window.parent!==window){
+  g('dn').hidden=true;
+  window.parent.postMessage({type:'app:ready',source:'eia-gdt'},'*');
+  window.parent.postMessage({type:'app:requestInit',source:'eia-gdt'},'*');
+  ss('on','Connecting...');
+}else{
+  ss('on','Dev mode');
+}
+})();
+</script></body></html>

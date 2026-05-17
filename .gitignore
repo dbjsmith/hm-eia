@@ -1,0 +1,16 @@
+# Environment variables
+.env
+.env.*
+
+# Dependencies
+node_modules/
+
+# Netlify
+.netlify/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
