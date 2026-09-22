@@ -97,16 +97,16 @@ The widget at index.html runs inside the GeoDataTrack iframe wrapper as an embed
 
 These do not block current functionality but should be addressed when feasible:
 
-1. **Wrong filter parameter name in `getSurveys`** (index.html ~line 204). Currently sends `{_apikey: ak}` regardless of context kind. Per BlueBox docs and Sample App reference, the param name should be level-specific: `property_apikey` for property level, `area_apikey` for area level, `point_apikey` for point level, `survey_apikey` for survey level. The current `scopeSurveys` client-side filter accidentally compensates, but the request itself is malformed.
+1. ~~**Wrong filter parameter name in `getSurveys`**~~ — Fixed: level-specific `property_apikey` / `area_apikey` / `point_apikey` / `survey_apikey`.
 
-2. **Proxy architecture is unnecessary infrastructure.** Sample App calls GDT directly from the iframe (bearer auth + CORS). EIA proxies through netlify/functions/gdt-proxy.js. Both work, but the proxy is extra moving parts without security benefit — the token is browser-side either way. Consider removing in favor of direct fetch matching the Sample App pattern.
+2. **Proxy architecture is unnecessary infrastructure.** Sample App calls GDT directly from the iframe (bearer auth + CORS). EIA proxies through netlify/functions/gdt-proxy.js. Both work, but the proxy is extra moving parts without security benefit — the token is browser-side either way. Consider removing in favor of direct fetch matching the Sample App pattern. Left intact for now (working path; CORS assumptions unverified in this environment).
 
-3. **No /oauth/bootstrap call at startup.** EIA jumps straight to /oauth/surveys. Sample App calls /oauth/bootstrap and /oauth/org first to validate auth and read org metadata. Adding this would provide clean auth verification independent of survey data — useful diagnostic on token failures.
+3. ~~**No /oauth/bootstrap call at startup.**~~ — Fixed: bootstrap + org run before surveys.
 
-4. **Silent exit in chat early-exit guard.** When `submitUserQuestion()` runs with no `window._eiaCtx`, it returns silently with no debug log. Add a one-line `log('chat-skipped', 'no eiaCtx — surveys not loaded yet')` so future debug sessions catch this pattern instantly.
+4. ~~**Silent exit in chat early-exit guard.**~~ — Fixed: logs `chat-skipped` and shows ask-hint feedback.
 
-5. **`mode` parameter mismatch.** Client sends `mode:'overview'` and `mode:'answer'` in calls to /.netlify/functions/eia-analyze, but the analyze function currently ignores `mode` in request parsing. Either start using it server-side or remove from client.
+5. ~~**`mode` parameter mismatch.**~~ — Fixed: eia-analyze honors `overview` / `answer`; answer mode returns `{ answer }`.
 
-6. **Hardcoded proxy URL in index.html** (~line 138): `'https://hm-eia.netlify.app/.netlify/functions/gdt-proxy'`. Breaks for staging/localhost deployments. Should use relative path or environment-derived value.
+6. ~~**Hardcoded proxy URL in index.html.**~~ — Fixed: relative `/.netlify/functions/...` paths.
 
-7. **Remaining "Skabenga" references** in README.md, eia-analyze.js, and comments in index.html. Survived the May 17 atomic JS-identifier rename which was scoped to JS code only. Sweep in a separate doc/comment cleanup commit.
+7. ~~**Remaining "Skabenga" references**~~ — Fixed in user/model-facing strings (README, eia-analyze prompt/errors, public chat UI). DOM ids like `sk*` left as-is to avoid a reckless rename.
