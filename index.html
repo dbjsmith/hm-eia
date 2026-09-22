@@ -193,16 +193,28 @@ function scopeSurveys(surveys,kind,ak){
   return filtered;
 }
 
+// BlueBox OAuth surveys filters are level-specific — not a generic `_apikey`.
+// See GDT/Sample App: property_apikey | area_apikey | point_apikey | survey_apikey.
+function surveyFilterParams(kind,ak){
+  if(kind==='property')return{property_apikey:ak};
+  if(kind==='area')return{area_apikey:ak};
+  if(kind==='geopoint'||kind==='point')return{point_apikey:ak};
+  if(kind==='survey')return{survey_apikey:ak};
+  // org / unknown: token already scopes to the install org; no filter param
+  return{};
+}
+
 function fetchSurveys(nav){
   var kind=(nav.kind||'org').toLowerCase();
   var ak=nav.context_apikey||nav.apikey||nav._apikey||'';
   log('ctx',{kind:kind,ak:ak?ak.substring(0,8)+'...':'MISSING',label:nav.label});
-  if(!ak){err('No apikey in context');return Promise.resolve([]);}
 
-  // Strategy: Use _apikey to get ALL surveys in the org/property tree (broadest scope),
-  // then client-side filter using the survey's own parent fields to enforce strict
-  // hierarchical scoping (property → area → geopoint → survey).
-  return getSurveys({_apikey:ak},kind).then(function(d){
+  // Org-level can proceed without a context apikey (token-scoped).
+  if(!ak&&kind!=='org'){err('No apikey in context');return Promise.resolve([]);}
+
+  var params=surveyFilterParams(kind,ak);
+  log('survey-params',params);
+  return getSurveys(params,kind).then(function(d){
     return scopeSurveys(d,kind,ak);
   });
 }
