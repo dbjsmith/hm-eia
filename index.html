@@ -74,7 +74,7 @@
 #erl{color:#ff6b6b;font-family:monospace;font-size:11px;padding:0 12px 8px}
 </style></head><body>
 <div id="app">
-<div id="hdr"><div id="sd"></div><h1>EIA v3.7</h1><span id="hs"></span></div>
+<div id="hdr"><div id="sd"></div><h1>EIA v3.8</h1><span id="hs"></span></div>
 <div id="dn"><strong>Outside GeoDataTrack</strong> - Waiting for host:init.</div>
 
 <div id="cols">
@@ -455,12 +455,22 @@ var _userQuestionCount=0;
 function submitUserQuestion(){
   var input=g('skaskinput');
   var btn=g('skaskbtn');
+  var hint=document.querySelector('.skask-hint');
   var q=(input.value||'').trim();
   if(!q)return;
 
   var ctx=window._eiaCtx||{};
   if(!ctx.nav){
-    // EIA context not ready yet
+    log('chat-skipped','no eiaCtx — surveys not loaded yet');
+    if(hint){
+      var prev=hint.textContent;
+      hint.textContent='Surveys are still loading — try again in a moment.';
+      hint.style.color='#c0392b';
+      setTimeout(function(){
+        hint.textContent=prev;
+        hint.style.color='';
+      },3500);
+    }
     return;
   }
 
