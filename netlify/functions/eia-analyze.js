@@ -1,9 +1,13 @@
 /**
- * eia-analyze.js  —  Skabenga three-perspective question engine
+ * eia-analyze.js  —  EIA three-perspective question engine
  *
  * Self-contained. No imports. Drop-in replacement for the existing function.
  *
- * Reasoning before Claude is called:
+ * Modes:
+ *   overview (default) — ecological narrative + five targeted questions
+ *   answer             — answer one follow-up question; returns { answer }
+ *
+ * Reasoning before Claude is called (overview):
  *   1. Identify limiting EOV process (lowest score; water cycle breaks ties)
  *   2. Classify journey stage from EHI band
  *   3. Detect data quality and anomalies
@@ -153,8 +157,8 @@ Intervention signals to look for: ${lp.signals.join(' | ')}` : '\n## Limiting Pr
   const anomalyText = anomalies.length ? `\n## Anomalies\n${anomalies.map(a => `- ${a}`).join('\n')}` : '';
   const guildText = guildGaps.length ? `\n## Missing Functional Guilds\n${guildGaps.map(g => `- ${g}`).join('\n')}` : '';
 
-  const system = `You are Skabenga — the ecologically intelligent field advisor for GeoDataTrack.
-Your name means "provocateur" in Zulu. You ask the questions that shift perspective and help land managers see their landscape more clearly.
+  const system = `You are EIA — the Ecologically Intelligent Agent, the field advisor for GeoDataTrack.
+You are a provocateur in the best sense: you ask the questions that shift perspective and help land managers see their landscape more clearly. You draw out what farmers already know rather than prescribing what to do.
 
 You reason through four ecosystem processes (EOV framework):
 - Water Cycle: the master process — where rain goes determines everything else
@@ -203,7 +207,7 @@ Interpret the ecological state of ${propertyName}.
 - Situate the property in its regeneration journey
 - Tone: direct, ecological, honest
 
-### 2. Five Skabenga Questions
+### 2. Five EIA Questions
 Distribution rules:
 - At least 2 questions target the limiting process
 - At least 1 uses a non-diagnostic lens (trend, validation, intervention_test, water_event, or blind_spot)
@@ -255,6 +259,35 @@ For each question provide:
   return { system, user };
 }
 
+// ─── ANSWER-MODE PROMPT ───────────────────────────────────────────────────────
+
+function buildAnswerPrompt({ propertyName, contextKind, question, answeredSample, answeredCount, totalCount, surveyCount }) {
+  const answerText = answeredSample.length
+    ? answeredSample.map(a => `Q: ${a.question}\nA: ${a.answer}`).join('\n\n')
+    : 'No answered survey questions available yet.';
+
+  const system = `You are EIA — the Ecologically Intelligent Agent, the field advisor for GeoDataTrack.
+You answer follow-up questions about a property's monitoring data in a Socratic, grounded way.
+Draw on the survey evidence provided. Be direct and ecological. Prefer asking the farmer to notice over prescribing.
+When data is thin, say so and suggest what to observe next.
+Respond ONLY with valid JSON: { "answer": "..." }. No markdown, no preamble.`;
+
+  const user = `## Property
+Name: ${propertyName} | Context: ${contextKind} | Surveys: ${surveyCount}
+Answers available: ${answeredCount}/${totalCount}
+
+## Survey Evidence
+${answerText}
+
+## Farmer's question
+${question}
+
+## JSON Schema
+{ "answer": "2–5 sentences grounded in the evidence above" }`;
+
+  return { system, user };
+}
+
 // ─── MAIN HANDLER ─────────────────────────────────────────────────────────────
 
 export default async (req) => {
@@ -272,6 +305,8 @@ export default async (req) => {
   catch { return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400 }); }
 
   const {
+    mode = 'overview',
+    question = '',
     navigation_context = {},
     eov_scores = {},
     surveys = [],
@@ -284,15 +319,77 @@ export default async (req) => {
   const answered = allAnswers.filter(a => a.answer !== null && a.answer !== undefined && a.answer !== '');
   const sample = answered.slice(0, 50);
 
-  // Reasoning
+  const propertyName = navigation_context.label || navigation_context.property?.name || 'this property';
+  const contextKind  = navigation_context.kind || 'property';
+
+  // ── Answer mode: single follow-up question → { answer } ──
+  if (mode === 'answer') {
+    if (!question || !String(question).trim()) {
+      return new Response(JSON.stringify({ error: 'Missing question for answer mode' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    console.log('[eia-analyze]', { mode: 'answer', propertyName, question: String(question).slice(0, 80) });
+
+    const { system, user } = buildAnswerPrompt({
+      propertyName, contextKind,
+      question: String(question).trim(),
+      answeredSample: sample,
+      answeredCount: answered.length,
+      totalCount: allAnswers.length,
+      surveyCount: surveys.length
+    });
+
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 800,
+          system,
+          messages: [{ role: 'user', content: user }]
+        })
+      });
+
+      const aiData = await resp.json();
+      if (!resp.ok) throw new Error(aiData.error?.message || 'Claude API error');
+
+      const rawText = (aiData.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      const cleaned = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
+      let parsed;
+      try {
+        parsed = JSON.parse(cleaned);
+      } catch {
+        // Model sometimes returns plain prose — treat whole text as the answer
+        parsed = { answer: cleaned || rawText };
+      }
+
+      const answer = parsed.answer || parsed.response || cleaned || 'No insight available.';
+      return new Response(JSON.stringify({ answer }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err) {
+      console.error('[eia-analyze] answer error:', err.message);
+      return new Response(JSON.stringify({
+        answer: 'EIA is temporarily unavailable. Please try again shortly.'
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  }
+
+  // ── Overview mode (default): narrative + questions ──
   const dataQuality     = assessDataQuality(surveys, answered.length, allAnswers.length);
   const limitingProcess = identifyLimitingProcess(eov_scores);
   const journeyStage    = classifyJourneyStage(eov_scores.ehi);
   const anomalies       = detectAnomalies(answered, eov_scores);
-  const propertyName    = navigation_context.label || navigation_context.property?.name || 'this property';
-  const contextKind     = navigation_context.kind || 'property';
 
-  console.log('[eia-analyze]', { propertyName, limitingProcess, journey: journeyStage.stage, dataQuality, answers: answered.length });
+  console.log('[eia-analyze]', { mode: 'overview', propertyName, limitingProcess, journey: journeyStage.stage, dataQuality, answers: answered.length });
 
   const { system, user } = buildPrompt({
     propertyName, contextKind,
@@ -334,7 +431,7 @@ export default async (req) => {
     } catch {
       console.error('[eia-analyze] parse failed, raw:', rawText.slice(0, 300));
       parsed = {
-        narrative: 'Skabenga received your data but could not format the analysis. Please try again.',
+        narrative: 'EIA received your data but could not format the analysis. Please try again.',
         questions: [], data_quality: dataQuality
       };
     }
@@ -357,7 +454,7 @@ export default async (req) => {
   } catch (err) {
     console.error('[eia-analyze] error:', err.message);
     return new Response(JSON.stringify({
-      narrative: 'Skabenga is temporarily unavailable.',
+      narrative: 'EIA is temporarily unavailable.',
       questions: [], _reasoning: { error: err.message }
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }

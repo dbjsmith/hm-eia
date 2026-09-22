@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Skabenga · EIA</title>
+  <title>EIA — Ecologically Intelligent Agent</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
   <style>
@@ -238,7 +238,7 @@
 <body>
 <div class="app">
   <header>
-    <div class="wordmark">Skabenga · <span>EIA</span></div>
+    <div class="wordmark">EIA</div>
     <div class="tagline">Ecologically Intelligent Agent</div>
   </header>
 
@@ -261,7 +261,7 @@
 
   <div class="input-area">
     <div class="input-row">
-      <textarea id="input" placeholder="Ask Skabenga about your land…" rows="1"
+      <textarea id="input" placeholder="Ask EIA about your land…" rows="1"
         onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button class="send-btn" id="sendBtn" onclick="sendMessage()">
         <svg viewBox="0 0 24 24"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
@@ -298,7 +298,7 @@
     const div = document.createElement('div');
     div.className = `message ${role}`;
     const id = 'mc-' + Date.now() + Math.random();
-    div.innerHTML = `<div class="message-role">${role === 'user' ? 'You' : 'Skabenga'}</div><div class="message-content" id="${id}">${content}</div>`;
+    div.innerHTML = `<div class="message-role">${role === 'user' ? 'You' : 'EIA'}</div><div class="message-content" id="${id}">${content}</div>`;
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div.querySelector('.message-content');

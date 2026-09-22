@@ -74,7 +74,7 @@
 #erl{color:#ff6b6b;font-family:monospace;font-size:11px;padding:0 12px 8px}
 </style></head><body>
 <div id="app">
-<div id="hdr"><div id="sd"></div><h1>EIA v3.7</h1><span id="hs"></span></div>
+<div id="hdr"><div id="sd"></div><h1>EIA v3.8</h1><span id="hs"></span></div>
 <div id="dn"><strong>Outside GeoDataTrack</strong> - Waiting for host:init.</div>
 
 <div id="cols">
@@ -135,7 +135,8 @@ function resolveBase(){
 
 function proxy(path,params){
   var base=resolveBase();
-  var proxyUrl='https://hm-eia.netlify.app/.netlify/functions/gdt-proxy';
+  // Relative path so staging / localhost / preview deploys hit the same origin
+  var proxyUrl='/.netlify/functions/gdt-proxy';
   return fetch(proxyUrl,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({path:path,params:params||{},token:C.access_token,base:base})
   }).then(function(r){
@@ -153,8 +154,8 @@ function proxy(path,params){
 
 // ── GDT Hierarchy: Org → Property → Area → Survey ──
 // (No /oauth/geopoints endpoint exists; geopoint apikey is just another scope key.)
-// GDT scopes /oauth/surveys based on which apikey is provided in the params.
-// We send the appropriate parameter name for each level and let GDT scope correctly.
+// GDT scopes /oauth/surveys based on which level-specific apikey param is provided.
+// We send property_apikey / area_apikey / point_apikey / survey_apikey per BlueBox docs.
 
 function getSurveys(p,lbl){
   return proxy('/oauth/surveys',p)
@@ -192,16 +193,28 @@ function scopeSurveys(surveys,kind,ak){
   return filtered;
 }
 
+// BlueBox OAuth surveys filters are level-specific — not a generic `_apikey`.
+// See GDT/Sample App: property_apikey | area_apikey | point_apikey | survey_apikey.
+function surveyFilterParams(kind,ak){
+  if(kind==='property')return{property_apikey:ak};
+  if(kind==='area')return{area_apikey:ak};
+  if(kind==='geopoint'||kind==='point')return{point_apikey:ak};
+  if(kind==='survey')return{survey_apikey:ak};
+  // org / unknown: token already scopes to the install org; no filter param
+  return{};
+}
+
 function fetchSurveys(nav){
   var kind=(nav.kind||'org').toLowerCase();
   var ak=nav.context_apikey||nav.apikey||nav._apikey||'';
   log('ctx',{kind:kind,ak:ak?ak.substring(0,8)+'...':'MISSING',label:nav.label});
-  if(!ak){err('No apikey in context');return Promise.resolve([]);}
 
-  // Strategy: Use _apikey to get ALL surveys in the org/property tree (broadest scope),
-  // then client-side filter using the survey's own parent fields to enforce strict
-  // hierarchical scoping (property → area → geopoint → survey).
-  return getSurveys({_apikey:ak},kind).then(function(d){
+  // Org-level can proceed without a context apikey (token-scoped).
+  if(!ak&&kind!=='org'){err('No apikey in context');return Promise.resolve([]);}
+
+  var params=surveyFilterParams(kind,ak);
+  log('survey-params',params);
+  return getSurveys(params,kind).then(function(d){
     return scopeSurveys(d,kind,ak);
   });
 }
@@ -341,7 +354,7 @@ var _answerCache={};
 
 function fetchEiaAnswer(question, navContext, surveys, answersBySurvey){
   if(_answerCache[question])return Promise.resolve(_answerCache[question]);
-  return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+  return fetch('/.netlify/functions/eia-analyze',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
@@ -442,12 +455,22 @@ var _userQuestionCount=0;
 function submitUserQuestion(){
   var input=g('skaskinput');
   var btn=g('skaskbtn');
+  var hint=document.querySelector('.skask-hint');
   var q=(input.value||'').trim();
   if(!q)return;
 
   var ctx=window._eiaCtx||{};
   if(!ctx.nav){
-    // EIA context not ready yet
+    log('chat-skipped','no eiaCtx — surveys not loaded yet');
+    if(hint){
+      var prev=hint.textContent;
+      hint.textContent='Surveys are still loading — try again in a moment.';
+      hint.style.color='#c0392b';
+      setTimeout(function(){
+        hint.textContent=prev;
+        hint.style.color='';
+      },3500);
+    }
     return;
   }
 
@@ -516,9 +539,46 @@ function boot(){
   var tok=C.access_token||'';
   log('token',{length:tok.length,prefix:tok.substring(0,30),startsWithBearer:tok.startsWith('Bearer ')});
 
+  // Validate auth like the Sample App: bootstrap + org before surveys.
+  // Failures here are logged; only hard auth errors abort boot.
+  validateAuth().then(function(ok){
+    if(!ok){
+      ss('er','Auth failed');
+      g('skw').style.display='none';
+      g('skc').style.display='block';
+      g('skb').style.display='inline-flex';g('skb').textContent='—';
+      g('skn').textContent='Could not validate GeoDataTrack credentials. Check the install token and try reloading.';
+      g('svw').style.display='none';
+      g('svl').style.display='block';
+      g('svl').innerHTML='<li style="color:#c0392b;font-style:italic;padding:8px 0">Auth validation failed — see debug log<\/li>';
+      return;
+    }
+    return loadSurveysAndInsights(nav);
+  }).catch(function(x){ss('er','Error');err('boot:'+x.message);});
+}
 
+function validateAuth(){
+  return proxy('/oauth/bootstrap',{})
+    .then(function(bootData){
+      log('oauth/bootstrap',bootData&&bootData.data?Object.keys(bootData.data):bootData);
+      return proxy('/oauth/org',{});
+    })
+    .then(function(orgData){
+      var org=(orgData&&orgData.data)||orgData||{};
+      log('oauth/org',{name:org.name||org.label||null,keys:Object.keys(org).slice(0,12)});
+      return true;
+    })
+    .catch(function(x){
+      err('auth: '+x.message);
+      log('auth-failed',x.message);
+      // Treat clearly unauthorized responses as hard failures; other errors still abort
+      // because bootstrap/org are the Sample App's auth gate before surveys.
+      return false;
+    });
+}
 
-  fetchSurveys(nav).then(function(sv){
+function loadSurveysAndInsights(nav){
+  return fetchSurveys(nav).then(function(sv){
     renderSurveys(sv);
     ss('on',nav.label||'');
 
@@ -540,13 +600,13 @@ function boot(){
       var ta=a._date?a._date.getTime():0,tb=b._date?b._date.getTime():0;
       return tb-ta;
     }).slice(0,15);
-    log('skab-sample',{total:sv.length,sending:svSample.length});
+    log('eia-sample',{total:sv.length,sending:svSample.length});
 
     // Fetch answers ONLY for the sample, then call EIA
-    fetchAnswers(svSample).then(function(by){
+    return fetchAnswers(svSample).then(function(by){
       // Store context for follow-up answer calls when questions are clicked
       window._eiaCtx={nav:nav,surveys:svSample,answers:by};
-      return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+      return fetch('/.netlify/functions/eia-analyze',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({mode:'overview',navigation_context:nav,surveys:svSample,answers_by_survey:by})
@@ -563,7 +623,7 @@ function boot(){
         });
     });
 
-  }).catch(function(x){ss('er','Error');err('boot:'+x.message);});
+  });
 }
 
 var _booted=false;

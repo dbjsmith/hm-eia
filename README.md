@@ -1,5 +1,5 @@
 # hm-eia
 
-WeCology EIA Core + Skabenga App
+WeCology EIA (Ecologically Intelligent Agent) — GeoDataTrack / BlueBox marketplace app.
 
-This is the main site for testing EIA integration.
+This is the main site for testing EIA integration with GeoDataTrack OAuth APIs.
