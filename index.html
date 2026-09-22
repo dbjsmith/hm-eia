@@ -135,7 +135,8 @@ function resolveBase(){
 
 function proxy(path,params){
   var base=resolveBase();
-  var proxyUrl='https://hm-eia.netlify.app/.netlify/functions/gdt-proxy';
+  // Relative path so staging / localhost / preview deploys hit the same origin
+  var proxyUrl='/.netlify/functions/gdt-proxy';
   return fetch(proxyUrl,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({path:path,params:params||{},token:C.access_token,base:base})
   }).then(function(r){
@@ -341,7 +342,7 @@ var _answerCache={};
 
 function fetchEiaAnswer(question, navContext, surveys, answersBySurvey){
   if(_answerCache[question])return Promise.resolve(_answerCache[question]);
-  return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+  return fetch('/.netlify/functions/eia-analyze',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
@@ -546,7 +547,7 @@ function boot(){
     fetchAnswers(svSample).then(function(by){
       // Store context for follow-up answer calls when questions are clicked
       window._eiaCtx={nav:nav,surveys:svSample,answers:by};
-      return fetch('https://hm-eia.netlify.app/.netlify/functions/eia-analyze',{
+      return fetch('/.netlify/functions/eia-analyze',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({mode:'overview',navigation_context:nav,surveys:svSample,answers_by_survey:by})
