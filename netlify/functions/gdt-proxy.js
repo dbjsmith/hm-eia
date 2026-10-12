@@ -1,79 +1,87 @@
+import { preflight, jsonResponse } from "./_shared/cors.js";
+import { buildGdtGetUrl } from "./_shared/gdt-allow.js";
+
+/**
+ * Read-only relay to GeoDataTrack.
+ * The browser POSTs { path, params, token, base }. This function issues
+ * a single GET to an allow-listed https://*.geodatatrack.com /oauth/* URL.
+ * It never forwards POST, PUT, PATCH, or DELETE. The access token is not logged.
+ */
+
 export default async (req) => {
-  const CORS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  };
-
-  const json = (data, status = 200) =>
-    new Response(JSON.stringify(data), {
-      status,
-      headers: { 'Content-Type': 'application/json', ...CORS }
-    });
-
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
 
   let body;
   try {
     body = await req.json();
   } catch {
-    return json({ error: 'Invalid request body' }, 400);
+    return jsonResponse(req, { error: "Invalid request body" }, 400);
   }
 
-  const { path, params = {}, token, base } = body;
+  const { path, token, base, method } = body || {};
+  const params = body && body.params && typeof body.params === "object" ? body.params : {};
 
-  if (!path) return json({ error: 'Missing path' }, 400);
-  if (!token) return json({ error: 'Missing token' }, 400);
-  if (!base) return json({ error: 'Missing base URL' }, 400);
+  if (method && String(method).toUpperCase() !== "GET") {
+    return jsonResponse(req, { error: "Only GET is allowed" }, 400);
+  }
+  if (!path) return jsonResponse(req, { error: "Missing path" }, 400);
+  if (!token) return jsonResponse(req, { error: "Missing token" }, 400);
+  if (!base) return jsonResponse(req, { error: "Missing base URL" }, 400);
 
-  const qs = Object.keys(params).length
-    ? '?' + new URLSearchParams(params).toString()
-    : '';
+  const url = buildGdtGetUrl(base, path, params);
+  if (!url) {
+    return jsonResponse(
+      req,
+      { error: "Base or path is not allowed. Only HTTPS GeoDataTrack /oauth/ reads are accepted." },
+      400,
+    );
+  }
 
-  const url = base.replace(/\/$/, '') + path + qs;
-  console.log(`gdt-proxy → GET ${url}`);
+  console.log(`gdt-proxy GET ${url.host}${url.pathname}`);
 
   let gdtResp;
   try {
     gdtResp = await fetch(url, {
-      method: 'GET',
+      method: "GET",
       headers: {
-        'Authorization': token.startsWith('Bearer ') ? token : `Bearer ${token}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      }
+        Authorization: String(token).startsWith("Bearer ") ? String(token) : `Bearer ${token}`,
+        Accept: "application/json",
+      },
     });
   } catch (fetchErr) {
-    console.error('gdt-proxy fetch error:', fetchErr.message);
-    return json({ error: `Network error reaching GDT: ${fetchErr.message}` }, 502);
+    console.error("gdt-proxy fetch error:", fetchErr.message);
+    return jsonResponse(req, { error: "Network error reaching GeoDataTrack" }, 502);
   }
 
   const responseText = await gdtResp.text();
   console.log(`gdt-proxy ← HTTP ${gdtResp.status} (${responseText.length} bytes)`);
 
   if (!responseText) {
-    return json({ error: `GDT returned empty body (HTTP ${gdtResp.status})`, status: gdtResp.status }, 502);
+    return jsonResponse(req, { error: `GeoDataTrack returned an empty body (HTTP ${gdtResp.status})` }, 502);
   }
 
   let responseData;
   try {
     responseData = JSON.parse(responseText);
   } catch {
-    return json({
-      error: `GDT returned non-JSON (HTTP ${gdtResp.status})`,
-      preview: responseText.substring(0, 200),
-      status: gdtResp.status
-    }, 502);
+    return jsonResponse(
+      req,
+      { error: `GeoDataTrack returned non-JSON (HTTP ${gdtResp.status})`, status: gdtResp.status },
+      502,
+    );
   }
 
   if (!gdtResp.ok) {
-    return json({
-      error: responseData.message || responseData.error || `GDT HTTP ${gdtResp.status}`,
-      gdt_status: gdtResp.status,
-      gdt_response: responseData
-    }, gdtResp.status);
+    return jsonResponse(
+      req,
+      {
+        error: responseData.message || responseData.error || `GeoDataTrack HTTP ${gdtResp.status}`,
+        gdt_status: gdtResp.status,
+      },
+      gdtResp.status,
+    );
   }
 
-  return json(responseData);
+  return jsonResponse(req, responseData);
 };
