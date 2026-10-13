@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EIA comparison</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, sans-serif; background: #f4f1ea; color: #1c1915; }
+  header { background: #0f6e56; color: #fff; padding: 16px 20px; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .9; }
+  main { padding: 16px 20px 40px; max-width: 1200px; margin: 0 auto; }
+  .gate { background: #fff; border-radius: 10px; padding: 16px; max-width: 420px; }
+  label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 6px; }
+  input[type=password] { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+  button { font: inherit; cursor: pointer; }
+  .btn { background: #0f6e56; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; }
+  .btn.secondary { background: #fff; color: #0f6e56; border: 1px solid #0f6e56; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+  .runs { display: grid; gap: 8px; }
+  .run { background: #fff; border: 0; border-radius: 10px; text-align: left; padding: 12px 14px; width: 100%; }
+  .run strong { display: block; }
+  .muted { color: #666; font-size: 12px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+  .col { background: #fff; border-radius: 10px; padding: 12px 14px; }
+  .col h2 { margin: 0 0 8px; font-size: 16px; }
+  .checks { font-size: 12px; background: #f7faf8; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+  .item { border-top: 1px solid #eee; padding: 8px 0; }
+  .item p { margin: 0 0 6px; }
+  .marks { display: flex; gap: 6px; flex-wrap: wrap; }
+  .marks button { border: 1px solid #ccc; background: #fff; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+  .marks button[aria-pressed="true"] { background: #0f6e56; color: #fff; border-color: #0f6e56; }
+  .err { color: #8a2b2b; }
+  details { margin-top: 8px; font-size: 12px; }
+  pre { white-space: pre-wrap; background: #f6f6f6; padding: 8px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EIA comparison</h1>
+  <p>Primary is what stewards see. Shadow is the open-weight run. Marks stay in this admin view.</p>
+</header>
+<main>
+  <form id="gate" class="gate">
+    <label for="token">Admin token</label>
+    <input id="token" type="password" autocomplete="current-password">
+    <div class="row"><button class="btn" type="submit">Open runs</button></div>
+    <p id="gate-err" class="err"></p>
+  </form>
+  <section id="list" hidden>
+    <div class="row">
+      <button id="csv" class="btn secondary" type="button">Download CSV</button>
+      <button id="refresh" class="btn secondary" type="button">Refresh</button>
+    </div>
+    <div id="runs" class="runs"></div>
+  </section>
+  <section id="detail" hidden>
+    <div class="row">
+      <button id="back" class="btn secondary" type="button">All runs</button>
+      <button id="save" class="btn" type="button">Save marks</button>
+      <span id="save-state" class="muted"></span>
+    </div>
+    <div id="detail-body"></div>
+  </section>
+</main>
+<script>
+(function () {
+  var token = "";
+  var current = null;
+  var marks = {};
+
+  function g(id) { return document.getElementById(id); }
+
+  function takeTokenFromQuery() {
+    var params = new URLSearchParams(location.search);
+    var fromQuery = params.get("token") || "";
+    if (!fromQuery) return;
+    token = fromQuery;
+    params.delete("token");
+    var next = params.toString();
+    history.replaceState(null, "", location.pathname + (next ? "?" + next : ""));
+  }
+
+  async function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign({ "x-compare-token": token }, options.headers || {});
+    var res = await fetch("/.netlify/functions/eia-compare" + path, options);
+    if (res.status === 401 || res.status === 503) {
+      var err = await res.json().catch(function () { return {}; });
+      throw new Error(err.error || "Not allowed");
+    }
+    return res;
+  }
+
+  function checkLine(checks) {
+    if (!checks) return "No checks";
+    var cite = checks.valid_citation_percent == null ? "n/a" : checks.valid_citation_percent + "% citations in the bundle";
+    return [
+      cite,
+      (checks.grade_strips || 0) + " grade strips",
+      (checks.prescription_strips || 0) + " prescription strips",
+      (checks.stm_strips || 0) + " STM-as-fact strips",
+      checks.schema_valid ? "schema valid" : "schema invalid"
+    ].join(" · ");
+  }
+
+  async function showList() {
+    g("detail").hidden = true;
+    g("list").hidden = false;
+    g("gate").hidden = true;
+    var res = await api("");
+    var data = await res.json();
+    var host = g("runs");
+    host.innerHTML = "";
+    (data.runs || []).forEach(function (run) {
+      var btn = document.createElement("button");
+      btn.className = "run";
+      btn.type = "button";
+      btn.innerHTML = "<strong>" + escapeHtml(run.property || "unspecified") + "</strong>"
+        + "<span class=\"muted\">" + escapeHtml(run.run_at || "") + " · " + escapeHtml(run.mode || "") + "</span><br>"
+        + "<span class=\"muted\">" + escapeHtml(run.primary_model || "") + " vs " + escapeHtml(run.shadow_model || "") + "</span><br>"
+        + "<span class=\"muted\">primary " + escapeHtml(checkLine(run.primary_checks)) + "</span>";
+      btn.addEventListener("click", function () { openRun(run.key); });
+      host.appendChild(btn);
+    });
+    if (!(data.runs || []).length) host.innerHTML = "<p class=\"muted\">No comparison runs yet. Shadow is off until SHADOW_ENABLED is true.</p>";
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"]/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[ch];
+    });
+  }
+
+  function itemsOf(side, role) {
+    var items = [];
+    var processes = (side && side.sanitised && side.sanitised.processes) || {};
+    ["water_cycle", "mineral_cycle", "energy_flow", "community_dynamics"].forEach(function (process) {
+      var block = processes[process] || {};
+      ["observations", "questions", "divergence", "gaps"].forEach(function (kind) {
+        (block[kind] || []).forEach(function (item, index) {
+          if (!item || !item.text) return;
+          items.push({ id: role + ":" + process + ":" + kind + ":" + index, process: process, kind: kind, text: item.text, citation: item.citation });
+        });
+      });
+    });
+    var answer = side && side.sanitised && (side.sanitised.answer || side.sanitised.response);
+    if (answer) items.push({ id: role + ":" + (side.sanitised.answer ? "answer:answer:0" : "chat:response:0"), process: role, kind: "text", text: answer });
+    return items;
+  }
+
+  function renderSide(side, role, title) {
+    var wrap = document.createElement("div");
+    wrap.className = "col";
+    var error = side && side.ok === false ? "<p class=\"err\">" + escapeHtml(side.error || "Shadow failed") + "</p>" : "";
+    wrap.innerHTML = "<h2>" + escapeHtml(title) + "</h2><p class=\"muted\">" + escapeHtml((side && side.model) || "")
+      + " · " + escapeHtml(side && side.latency_ms != null ? side.latency_ms + " ms" : "") + "</p>"
+      + "<div class=\"checks\">" + escapeHtml(checkLine(side && side.checks)) + "</div>" + error;
+    itemsOf(side, role).forEach(function (item) {
+      var block = document.createElement("div");
+      block.className = "item";
+      var cite = item.citation && (item.citation.survey_id || item.citation.date)
+        ? "<p class=\"muted\">" + escapeHtml([item.citation.survey_id, item.citation.date].filter(Boolean).join(" · ")) + "</p>" : "";
+      block.innerHTML = "<p class=\"muted\">" + escapeHtml(item.process + " · " + item.kind) + "</p><p>" + escapeHtml(item.text) + "</p>" + cite;
+      var marksRow = document.createElement("div");
+      marksRow.className = "marks";
+      ["grounded", "new", "useful", "overreach"].forEach(function (name) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.textContent = name;
+        var on = Boolean(marks[item.id] && marks[item.id][name]);
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+        button.addEventListener("click", function () {
+          marks[item.id] = marks[item.id] || {};
+          marks[item.id][name] = !marks[item.id][name];
+          button.setAttribute("aria-pressed", marks[item.id][name] ? "true" : "false");
+        });
+        marksRow.appendChild(button);
+      });
+      block.appendChild(marksRow);
+      wrap.appendChild(block);
+    });
+    if (side && side.raw) {
+      var raw = document.createElement("details");
+      raw.innerHTML = "<summary>Raw model text</summary><pre></pre>";
+      raw.querySelector("pre").textContent = side.raw;
+      wrap.appendChild(raw);
+    }
+    return wrap;
+  }
+
+  async function openRun(key) {
+    var res = await api("?key=" + encodeURIComponent(key));
+    current = await res.json();
+    marks = Object.assign({}, current.marks || {});
+    g("list").hidden = true;
+    g("detail").hidden = false;
+    g("save-state").textContent = "";
+    var body = g("detail-body");
+    body.innerHTML = "";
+    var cols = document.createElement("div");
+    cols.className = "cols";
+    cols.appendChild(renderSide(current.primary, "primary", "Primary"));
+    cols.appendChild(renderSide(current.shadow, "shadow", "Shadow"));
+    body.appendChild(cols);
+  }
+
+  g("gate").addEventListener("submit", function (event) {
+    event.preventDefault();
+    token = g("token").value.trim();
+    g("gate-err").textContent = "";
+    showList().catch(function (err) { g("gate-err").textContent = err.message; });
+  });
+  g("refresh").addEventListener("click", function () { showList().catch(function (err) { alert(err.message); }); });
+  g("back").addEventListener("click", function () { showList().catch(function (err) { alert(err.message); }); });
+  g("save").addEventListener("click", function () {
+    if (!current) return;
+    g("save-state").textContent = "Saving…";
+    api("", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: current.key, marks: marks })
+    }).then(function (res) { return res.json(); }).then(function () {
+      g("save-state").textContent = "Saved";
+    }).catch(function (err) { g("save-state").textContent = err.message; });
+  });
+  g("csv").addEventListener("click", function () {
+    api("?format=csv").then(function (res) { return res.blob(); }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = url;
+      link.download = "eia-comparisons.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    }).catch(function (err) { alert(err.message); });
+  });
+
+  takeTokenFromQuery();
+  if (token) showList().catch(function (err) { g("gate-err").textContent = err.message; g("gate").hidden = false; });
+})();
+</script>
+</body>
+</html>

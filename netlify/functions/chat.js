@@ -2,24 +2,23 @@ import { preflight, jsonResponse } from "./_shared/cors.js";
 import { LIMITS } from "./_shared/limits.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
 import { DISCLAIMER, EIA_SYSTEM, PROMPT_VERSION } from "./_shared/eia-prompt.js";
-import { sanitiseFreeText } from "./_shared/eia-sanitiser.js";
+import { emptyStripTally, sanitiseFreeText } from "./_shared/eia-sanitiser.js";
+import { callAnthropic, deferBackground, readLlmConfig, startShadow } from "./_shared/llm.js";
+import { getCompareStore } from "./_shared/compare-store.js";
+import { buildComparisonRecord, inputHash, sideRecord } from "./_shared/compare-record.js";
 
 /**
  * Relational chat. Uses the same versioned system prompt as eia-analyze.
  * Does not score, and does not write to GeoDataTrack.
  */
 
-function envGet(name) {
-  try {
-    if (typeof Netlify !== "undefined" && Netlify.env && typeof Netlify.env.get === "function") {
-      const value = Netlify.env.get(name);
-      if (value) return value;
-    }
-  } catch {
-    /* local tests have no Netlify global */
-  }
-  return process.env[name] || "";
-}
+const CHAT_SANITISE_REQ = {
+  constraints: { no_foreign_property_names: true, no_stm_state_as_fact: true },
+  consent: { aggregate_ok: false },
+  holistic_context: { present: false },
+  ground: { ehi_if_present: null },
+  catalogue: { status: "missing" },
+};
 
 function normaliseMessages(messages) {
   if (!Array.isArray(messages) || !messages.length) {
@@ -42,7 +41,7 @@ function normaliseMessages(messages) {
   return { messages: clean };
 }
 
-export default async (req) => {
+export default async (req, context) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
 
@@ -75,50 +74,133 @@ export default async (req) => {
   const normalised = normaliseMessages(body.messages);
   if (normalised.error) return jsonResponse(req, { error: normalised.error }, 400);
 
-  const apiKey = envGet("ANTHROPIC_API_KEY");
-  if (!apiKey) return jsonResponse(req, { error: "API key not configured" }, 500);
+  const config = readLlmConfig();
+  if (!config.anthropicKey) return jsonResponse(req, { error: "API key not configured" }, 500);
 
+  const fetchImpl = globalThis.fetch;
+  const shadowPromise = startShadow(config, {
+    system: EIA_SYSTEM,
+    messages: normalised.messages,
+    maxTokens: LIMITS.chat.maxTokens,
+    fetchImpl,
+  });
+
+  let primaryResult;
   try {
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: LIMITS.chat.maxTokens,
-        system: EIA_SYSTEM,
-        messages: normalised.messages,
-      }),
-    });
-
-    const data = await anthropicRes.json();
-    if (!anthropicRes.ok) {
-      return jsonResponse(req, { error: data.error?.message || "Anthropic API error" }, anthropicRes.status);
-    }
-
-    const text = data.content?.[0]?.text || "";
-    const cleaned = sanitiseFreeText(text, {
-      constraints: { no_foreign_property_names: true, no_stm_state_as_fact: true },
-      consent: { aggregate_ok: false },
-      holistic_context: { present: false },
-      ground: { ehi_if_present: null },
-      catalogue: { status: "missing" },
-    });
-
-    return jsonResponse(req, {
-      response: cleaned.text,
-      prompt_version: PROMPT_VERSION,
-      disclaimer: DISCLAIMER,
-      uncertainty: cleaned.uncertainty,
+    primaryResult = await callAnthropic({
+      apiKey: config.anthropicKey,
+      model: config.primaryModel,
+      system: EIA_SYSTEM,
+      messages: normalised.messages,
+      maxTokens: LIMITS.chat.maxTokens,
+      fetchImpl,
     });
   } catch (err) {
     console.error("[chat]", err.message);
+    deferBackground(context, () => storeChatComparison({
+      config,
+      shadowPromise,
+      messages: normalised.messages,
+      primaryResult: {
+        ok: false,
+        model: config.primaryModel,
+        text: "",
+        error: err.message,
+        latencyMs: null,
+        usage: { input_tokens: null, output_tokens: null },
+      },
+      sanitised: null,
+      tally: emptyStripTally(),
+    }));
     return jsonResponse(req, { error: "Internal error" }, 500);
   }
+
+  if (!primaryResult.ok) {
+    deferBackground(context, () => storeChatComparison({
+      config,
+      shadowPromise,
+      messages: normalised.messages,
+      primaryResult,
+      sanitised: null,
+      tally: emptyStripTally(),
+    }));
+    return jsonResponse(req, { error: primaryResult.error || "Anthropic API error" }, primaryResult.status || 502);
+  }
+
+  const tally = emptyStripTally();
+  const cleaned = sanitiseFreeText(primaryResult.text, CHAT_SANITISE_REQ, tally);
+  const payload = {
+    response: cleaned.text,
+    prompt_version: PROMPT_VERSION,
+    disclaimer: DISCLAIMER,
+    uncertainty: cleaned.uncertainty,
+  };
+
+  deferBackground(context, () => storeChatComparison({
+    config,
+    shadowPromise,
+    messages: normalised.messages,
+    primaryResult,
+    sanitised: payload,
+    tally,
+  }));
+
+  return jsonResponse(req, payload);
 };
+
+async function storeChatComparison({ config, shadowPromise, messages, primaryResult, sanitised, tally }) {
+  if (!shadowPromise) return;
+  let shadowResult;
+  try {
+    shadowResult = await shadowPromise;
+  } catch (err) {
+    console.error("[eia-shadow]", err.message);
+    shadowResult = {
+      ok: false,
+      model: config.shadowModel,
+      text: "",
+      error: err.message,
+      latencyMs: null,
+      usage: { input_tokens: null, output_tokens: null },
+    };
+  }
+  const shadowTally = emptyStripTally();
+  const shadowCleaned = shadowResult.ok ? sanitiseFreeText(shadowResult.text, CHAT_SANITISE_REQ, shadowTally) : null;
+  const shadowPayload = shadowCleaned
+    ? { response: shadowCleaned.text, prompt_version: PROMPT_VERSION, uncertainty: shadowCleaned.uncertainty }
+    : null;
+  const record = buildComparisonRecord({
+    property: "chat",
+    runAt: new Date().toISOString(),
+    hash: inputHash(JSON.stringify(messages)),
+    mode: "chat",
+    primary: sideRecord({
+      result: primaryResult,
+      parsed: sanitised,
+      sanitised,
+      tally,
+      surveyIds: new Set(),
+      mode: "chat",
+      schemaValid: Boolean(sanitised?.response),
+    }),
+    shadow: sideRecord({
+      result: shadowResult,
+      parsed: shadowPayload,
+      sanitised: shadowPayload,
+      tally: shadowTally,
+      surveyIds: new Set(),
+      mode: "chat",
+      schemaValid: Boolean(shadowPayload?.response),
+    }),
+  });
+  const store = await getCompareStore();
+  if (!store) {
+    console.error("[eia-shadow] comparison store unavailable");
+    return;
+  }
+  await store.setJSON(record.key, record);
+  console.log("[eia-shadow] stored", record.key);
+}
 
 export const config = {
   path: "/api/chat",

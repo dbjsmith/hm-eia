@@ -2,7 +2,16 @@ import { preflight, jsonResponse } from "./_shared/cors.js";
 import { LIMITS } from "./_shared/limits.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
 import { ANSWER_SCHEMA, DISCLAIMER, EIA_SYSTEM, PROMPT_VERSION, READING_SCHEMA } from "./_shared/eia-prompt.js";
-import { sanitiseEiaReturn, stripGradeKeys } from "./_shared/eia-sanitiser.js";
+import { emptyStripTally, sanitiseEiaReturn, stripGradeKeys } from "./_shared/eia-sanitiser.js";
+import { callAnthropic, deferBackground, envGet, readLlmConfig, startShadow } from "./_shared/llm.js";
+import { getCompareStore } from "./_shared/compare-store.js";
+import {
+  buildComparisonRecord,
+  inputHash,
+  readingSchemaValid,
+  sideRecord,
+  surveyIdsFrom,
+} from "./_shared/compare-record.js";
 
 /**
  * EIA Reading.
@@ -19,18 +28,6 @@ const PROCESS_LABELS = {
   energy_flow: "Energy flow",
   community_dynamics: "Community dynamics",
 };
-
-function envGet(name) {
-  try {
-    if (typeof Netlify !== "undefined" && Netlify.env && typeof Netlify.env.get === "function") {
-      const value = Netlify.env.get(name);
-      if (value) return value;
-    }
-  } catch {
-    /* local tests have no Netlify global */
-  }
-  return process.env[name] || "";
-}
 
 function requestContext(body) {
   const nav = body.navigation_context || {};
@@ -121,34 +118,6 @@ function parseModelJson(rawText) {
   return JSON.parse(cleaned);
 }
 
-async function callModel({ apiKey, user, maxTokens, fetchImpl }) {
-  const resp = await fetchImpl("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: maxTokens,
-      system: EIA_SYSTEM,
-      messages: [{ role: "user", content: user }],
-    }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    const message = data?.error?.message || "Claude API error";
-    const error = new Error(message);
-    error.status = resp.status;
-    throw error;
-  }
-  return (data.content || [])
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
-}
-
 function asItem(item) {
   if (typeof item === "string") {
     return { text: item, citation: null, confidence: "low", falsifier: "" };
@@ -212,8 +181,8 @@ function flatQuestions(processes) {
   return questions.slice(0, 8);
 }
 
-function finaliseOverview(parsed, reqContext) {
-  const cleaned = sanitiseEiaReturn(reqContext, parsed);
+function finaliseOverview(parsed, reqContext, tally = null) {
+  const cleaned = sanitiseEiaReturn(reqContext, parsed, tally);
   const reading = normaliseReading(cleaned);
   const again = sanitiseEiaReturn(reqContext, reading);
   stripGradeKeys(again);
@@ -233,7 +202,7 @@ function finaliseOverview(parsed, reqContext) {
   };
 }
 
-function finaliseAnswer(parsed, reqContext) {
+function finaliseAnswer(parsed, reqContext, tally = null) {
   const draft = {
     answer: typeof parsed.answer === "string" ? parsed.answer : "",
     citations: Array.isArray(parsed.citations) ? parsed.citations : [],
@@ -243,7 +212,7 @@ function finaliseAnswer(parsed, reqContext) {
     signals: parsed.signals,
     narrative: typeof parsed.narrative === "string" ? parsed.narrative : "",
   };
-  const cleaned = sanitiseEiaReturn(reqContext, draft);
+  const cleaned = sanitiseEiaReturn(reqContext, draft, tally);
   stripGradeKeys(cleaned);
   const answer = String(cleaned.answer || cleaned.narrative || "").trim();
   return {
@@ -266,7 +235,97 @@ function fallbackOverview() {
   };
 }
 
-export default async (req) => {
+function fallbackParsed(mode) {
+  if (mode === "answer") {
+    return {
+      answer: "I could not read a cited reply just now. What do you see on the ground that the surveys do not show?",
+    };
+  }
+  return fallbackOverview();
+}
+
+function shapeParsed(text, mode) {
+  if (!text) return { parsed: fallbackParsed(mode), schemaValid: false };
+  try {
+    const parsed = parseModelJson(text);
+    return { parsed, schemaValid: readingSchemaValid(parsed, mode) };
+  } catch {
+    return { parsed: fallbackParsed(mode), schemaValid: false };
+  }
+}
+
+async function storeComparison({
+  config,
+  shadowPromise,
+  mode,
+  ctx,
+  body,
+  user,
+  primaryResult,
+  primaryParsed,
+  primaryPayload,
+  primaryTally,
+  primarySchemaValid,
+}) {
+  if (!shadowPromise) return;
+  let shadowResult;
+  try {
+    shadowResult = await shadowPromise;
+  } catch (err) {
+    console.error("[eia-shadow]", err.message);
+    shadowResult = {
+      ok: false,
+      model: config.shadowModel,
+      text: "",
+      error: err.message,
+      latencyMs: null,
+      usage: { input_tokens: null, output_tokens: null },
+    };
+  }
+  const shadowShaped = shadowResult.ok ? shapeParsed(shadowResult.text, mode) : { parsed: null, schemaValid: false };
+  const shadowTally = emptyStripTally();
+  const shadowPayload = shadowShaped.parsed
+    ? mode === "answer"
+      ? finaliseAnswer(shadowShaped.parsed, ctx, shadowTally)
+      : finaliseOverview(shadowShaped.parsed, ctx, shadowTally)
+    : null;
+  const property = ctx.navigation_context?.label || ctx.ground?.property_name || "unspecified";
+  const surveyIds = surveyIdsFrom(body.surveys);
+  const runAt = new Date().toISOString();
+  const record = buildComparisonRecord({
+    property,
+    runAt,
+    hash: inputHash(user),
+    mode,
+    primary: sideRecord({
+      result: primaryResult,
+      parsed: primaryParsed,
+      sanitised: primaryPayload,
+      tally: primaryTally,
+      surveyIds,
+      mode,
+      schemaValid: primarySchemaValid && primaryResult.ok,
+    }),
+    shadow: sideRecord({
+      result: shadowResult,
+      parsed: shadowShaped.parsed,
+      sanitised: shadowPayload,
+      tally: shadowTally,
+      surveyIds,
+      mode,
+      schemaValid: shadowShaped.schemaValid && shadowResult.ok,
+    }),
+  });
+  const store = await getCompareStore();
+  if (!store) {
+    console.error("[eia-shadow] comparison store unavailable");
+    return;
+  }
+  await store.setJSON(record.key, record);
+  console.log("[eia-shadow] stored", record.key);
+}
+
+export default async (req, context) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
 
@@ -302,30 +361,64 @@ export default async (req) => {
     return jsonResponse(req, { error: "Missing question" }, 400);
   }
 
-  const apiKey = envGet("ANTHROPIC_API_KEY");
-  if (!apiKey) return jsonResponse(req, { error: "ANTHROPIC_API_KEY not set" }, 500);
+  const config = readLlmConfig();
+  if (!config.anthropicKey) return jsonResponse(req, { error: "ANTHROPIC_API_KEY not set" }, 500);
 
   const ctx = requestContext(body);
   const user = mode === "answer" ? answerUser(body) : overviewUser(body);
+  const messages = [{ role: "user", content: user }];
+  const fetchImpl = globalThis.fetch;
 
-  let parsed;
+  const shadowPromise = startShadow(config, {
+    system: EIA_SYSTEM,
+    messages,
+    maxTokens: LIMITS.analyze.maxTokens,
+    fetchImpl,
+  });
+
+  let primaryResult;
   try {
-    const text = await callModel({
-      apiKey,
-      user,
+    primaryResult = await callAnthropic({
+      apiKey: config.anthropicKey,
+      model: config.primaryModel,
+      system: EIA_SYSTEM,
+      messages,
       maxTokens: LIMITS.analyze.maxTokens,
-      fetchImpl: globalThis.fetch,
+      fetchImpl,
     });
-    parsed = parseModelJson(text);
   } catch (err) {
     console.error("[eia-analyze]", err.message);
-    parsed = mode === "answer"
-      ? { answer: "I could not read a cited reply just now. What do you see on the ground that the surveys do not show?" }
-      : fallbackOverview();
+    primaryResult = {
+      ok: false,
+      model: config.primaryModel,
+      text: "",
+      error: err.message,
+      latencyMs: null,
+      usage: { input_tokens: null, output_tokens: null },
+    };
   }
 
-  const payload = mode === "answer" ? finaliseAnswer(parsed, ctx) : finaliseOverview(parsed, ctx);
+  const shaped = primaryResult.ok ? shapeParsed(primaryResult.text, mode) : { parsed: fallbackParsed(mode), schemaValid: false };
+  const tally = emptyStripTally();
+  const payload = mode === "answer"
+    ? finaliseAnswer(shaped.parsed, ctx, tally)
+    : finaliseOverview(shaped.parsed, ctx, tally);
   stripGradeKeys(payload);
+
+  deferBackground(context, () => storeComparison({
+    config,
+    shadowPromise,
+    mode,
+    ctx,
+    body,
+    user,
+    primaryResult,
+    primaryParsed: shaped.parsed,
+    primaryPayload: payload,
+    primaryTally: tally,
+    primarySchemaValid: shaped.schemaValid,
+  }));
+
   console.log("[eia-analyze]", { mode, prompt_version: PROMPT_VERSION, uncertainty: payload.uncertainty?.length || 0 });
   return jsonResponse(req, payload, 200);
 };

@@ -14,6 +14,8 @@ import { EIA_SYSTEM, PROMPT_VERSION } from "../netlify/functions/_shared/eia-pro
 import { sanitiseEiaReturn } from "../netlify/functions/_shared/eia-sanitiser.js";
 import { LIMITS } from "../netlify/functions/_shared/limits.js";
 
+process.env.SHADOW_ENABLED = "false";
+
 const FORBIDDEN_KEYS = ["ehi", "journey_stage", "limiting_process", "priority_lever"];
 let passed = 0;
 

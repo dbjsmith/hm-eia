@@ -72,9 +72,26 @@ function minUse(requested, allowed) {
   return Object.keys(USE_RANK).find((key) => USE_RANK[key] === rank) || "scaffold_only";
 }
 
-export function stripGradeKeys(node, uncertainty) {
+export function emptyStripTally() {
+  return {
+    grade: 0,
+    prescription: 0,
+    stm_as_fact: 0,
+    ehi: 0,
+    foreign_name: 0,
+    peer_language: 0,
+    hm_checks: 0,
+  };
+}
+
+function bump(tally, key, amount = 1) {
+  if (!tally || !amount) return;
+  tally[key] = (tally[key] || 0) + amount;
+}
+
+export function stripGradeKeys(node, uncertainty, tally) {
   if (Array.isArray(node)) {
-    node.forEach((item) => stripGradeKeys(item, uncertainty));
+    node.forEach((item) => stripGradeKeys(item, uncertainty, tally));
     return node;
   }
   if (!node || typeof node !== "object") return node;
@@ -82,9 +99,10 @@ export function stripGradeKeys(node, uncertainty) {
     if (GRADE_KEYS.has(key.toLowerCase())) {
       delete node[key];
       if (uncertainty) pushUnique(uncertainty, "grade_fields_removed");
+      bump(tally, "grade");
       continue;
     }
-    stripGradeKeys(node[key], uncertainty);
+    stripGradeKeys(node[key], uncertainty, tally);
   }
   return node;
 }
@@ -255,16 +273,18 @@ function enforceFalsifiers(out, uncertainty) {
   });
 }
 
-function softenPrescriptions(out, uncertainty) {
+function softenPrescriptions(out, uncertainty, tally) {
   walkObjects(out, (obj) => {
     for (const field of ["text", "observation", "ask", "narrative", "answer", "question"]) {
       if (typeof obj[field] !== "string" || !PRESCRIBE.test(obj[field])) continue;
       if (String(obj.falsifier || "").trim()) continue;
+      const hits = obj[field].match(new RegExp(PRESCRIBE.source, "gi"));
       obj[field] = rewritePrescription(obj[field]);
       if ((field === "text" || field === "observation") && !String(obj.falsifier || "").trim()) {
         obj.falsifier = "What you see on the next walk on this ground would overturn this.";
       }
       pushUnique(uncertainty, "prescription_without_falsifier");
+      bump(tally, "prescription", hits ? hits.length : 1);
     }
   });
 }
@@ -319,7 +339,24 @@ function flagUncited(out, uncertainty) {
   }
 }
 
-export function sanitiseEiaReturn(req = {}, raw = {}) {
+const STM_COUNT_PATTERNS = [
+  /\b(?:your\s+)?(?:water|mineral|energy|community)(?:\s+cycle|\s+flow|\s+dynamics)?\s+is\s+(?:severely\s+|slightly\s+)?[A-Za-z][A-Za-z\- ]{0,40}/gi,
+  /\b(?:is|are|was|were)\s+(?:severely\s+|slightly\s+)?(?:degraded|desertified)\b/gi,
+  /\bclassified\s+as\b/gi,
+  /\bstate\s+[A-D]\b/gi,
+];
+
+function countPatternHits(text, patterns) {
+  let count = 0;
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    const hits = String(text).match(pattern);
+    if (hits) count += hits.length;
+  }
+  return count;
+}
+
+export function sanitiseEiaReturn(req = {}, raw = {}, tally = null) {
   const uncertainty = [];
   const out = clone(raw);
   if (!Array.isArray(out.uncertainty)) out.uncertainty = [];
@@ -338,7 +375,7 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
   };
   if (use !== requestedUse) pushUnique(uncertainty, "catalogue_use_downgraded");
 
-  stripGradeKeys(out, uncertainty);
+  stripGradeKeys(out, uncertainty, tally);
 
   const holisticPresent = req.holistic_context?.present === true || req.consent?.holistic_context_shared === true;
   if (!holisticPresent) {
@@ -346,6 +383,7 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
     forceHmChecksSkipped(out);
     if (claimed) {
       pushUnique(uncertainty, "holistic_context_absent");
+      bump(tally, "hm_checks");
       ensureHmQuestion(out);
     }
   }
@@ -364,6 +402,7 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
       if (next !== text) {
         text = next;
         pushUnique(uncertainty, "ehi_absent");
+        bump(tally, "ehi");
       }
     }
     if (!aggregateOk) {
@@ -371,22 +410,29 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
       if (next !== text) {
         text = next;
         pushUnique(uncertainty, "peer_language_removed");
+        bump(tally, "peer_language");
       }
     }
     if (noForeign) {
       const next = stripForeignNames(text, names);
-      if (next.removed) pushUnique(uncertainty, "removed_foreign_reference");
+      if (next.removed) {
+        pushUnique(uncertainty, "removed_foreign_reference");
+        bump(tally, "foreign_name");
+      }
       text = next.text;
     }
     if (noStm) {
+      const hits = countPatternHits(text, STM_COUNT_PATTERNS);
       const next = softenStateFacts(text);
       if (next !== text) {
         text = next;
         pushUnique(uncertainty, "stm_state_as_fact_removed");
+        bump(tally, "stm_as_fact", hits || 1);
       }
     }
     if (!holisticPresent && HM_PROSE.test(text)) {
       hmProse = true;
+      bump(tally, "hm_checks");
       text = text.replace(HM_PROSE, "holistic context was not shared, so that check was not run");
     }
     return text;
@@ -399,7 +445,7 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
 
   dropGuttedSignals(out, uncertainty);
   enforceFalsifiers(out, uncertainty);
-  softenPrescriptions(out, uncertainty);
+  softenPrescriptions(out, uncertainty, tally);
   warnCoupled(out, uncertainty);
   flagUncited(out, uncertainty);
 
@@ -416,8 +462,8 @@ export function sanitiseEiaReturn(req = {}, raw = {}) {
   return out;
 }
 
-export function sanitiseFreeText(text, req = {}) {
-  const wrapped = sanitiseEiaReturn(req, { answer: String(text ?? "") });
+export function sanitiseFreeText(text, req = {}, tally = null) {
+  const wrapped = sanitiseEiaReturn(req, { answer: String(text ?? "") }, tally);
   return {
     text: wrapped.answer || "",
     uncertainty: wrapped.uncertainty || [],
