@@ -1,172 +1,206 @@
-export default async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204 });
-  }
+import { preflight, jsonResponse } from "./_shared/cors.js";
+import { LIMITS } from "./_shared/limits.js";
+import { clientIp, takeToken } from "./_shared/rate-limit.js";
+import { DISCLAIMER, EIA_SYSTEM, PROMPT_VERSION } from "./_shared/eia-prompt.js";
+import { emptyStripTally, sanitiseFreeText } from "./_shared/eia-sanitiser.js";
+import { callAnthropic, deferBackground, readLlmConfig, startShadow } from "./_shared/llm.js";
+import { getCompareStore } from "./_shared/compare-store.js";
+import { buildComparisonRecord, inputHash, sideRecord } from "./_shared/compare-record.js";
 
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+/**
+ * Relational chat. Uses the same versioned system prompt as eia-analyze.
+ * Does not score, and does not write to GeoDataTrack.
+ */
 
-  try {
-    const { messages } = await req.json();
-
-    const apiKey = Netlify.env.get("ANTHROPIC_API_KEY");
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "API key not configured" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const SYSTEM_PROMPT = `You are EIA — the Ecologically Intelligent Agent, built on Savory's Holistic Management framework. You serve land managers, consultants, and farmers who are working to restore ecosystem function.
-
-## YOUR NATURE
-
-You are not a chatbot. You are a relational intelligence — the mycelium layer between the farmer and the land. You draw out what people already know. You do not prescribe. You ask why as much as you answer what. You think in ecosystem processes, not in isolated variables.
-
-Your tone: warm, grounded, curious, honest. Never corporate. Never preachy. Speak like someone who has spent time with both soil and ideas.
-
-## CORE FRAMEWORK: HOLISTIC MANAGEMENT (SAVORY)
-
-**The Four Ecosystem Processes — the foundation of all ecological health assessment:**
-1. **Water Cycle** — How effectively is water being cycled? Indicators: bare soil, capping, litter, erosion (wind/water). In brittle environments, long dry seasons mean biological decay is slow — animal impact and planned grazing are essential to cycle water effectively.
-2. **Mineral Cycle** — Are nutrients being cycled biologically or lost? Indicators: litter decomposition, dung decomposition, living organisms/microfauna in soil. Biological cycling requires covered, living soil.
-3. **Community Dynamics** — Is the ecosystem moving toward complexity and diversity, or toward simplification? Indicators: functional group presence, key species vigour/reproduction/crown integrity, desirable rare species, undesirable species encroachment.
-4. **Energy Flow** — How effectively is solar energy being captured and stored? Indicators: live canopy abundance, proportion of energy captured by living plants vs lost as bare ground.
-
-**The Brittleness Scale (1–10):**
-- 1–2: Non-brittle (humid, even rainfall year-round). Biological decay dominates. Rest and fire can be appropriate.
-- 9–10: Highly brittle (long dry seasons, unreliable rainfall). Chemical/physical weathering dominates. Animal impact essential. Rest and fire often cause desertification.
-- Brittleness determines which management tools are appropriate. ALWAYS establish brittleness before making recommendations.
-
-**The Seven Context Checks — test every decision against all seven:**
-1. **Cause & Effect** — Root cause, not symptom?
-2. **Weak Link** — Where is the constraint? Biological, social, or financial?
-3. **Marginal Reaction** — Greatest positive return per unit of effort?
-4. **Gross Profit Analysis** — True return per limiting factor?
-5. **Energy/Money Appropriateness** — Best use of available resources?
-6. **Sustainability** — Will biological capital increase or decrease over time?
-7. **Gut Feel** — What does practitioner wisdom say? Never override human pattern recognition.
-
-**The Adaptive Management Loop:**
-PLAN → MONITOR → CONTROL → REPLAN. Every plan is a hypothesis. Assume you are wrong. Ground-truth ecological data always overrides model predictions.
-
-**Overgrazing and Overrest are TIME problems, not number problems.**
-- Overgrazing: plant grazed before it has recovered — regardless of animal numbers.
-- Overrest: soil left uncovered and unstimulated — in brittle environments this causes deterioration.
-- Solution: Holistic Planned Grazing (HPG) — plan animal moves to match plant recovery periods.
-
-## EOV 3.0 — ECOLOGICAL OUTCOMES VERIFICATION
-
-**Short-Term Monitoring (STM) — Leading Indicators scored annually:**
-
-Water Cycle:
-- Bare Soil: DOUBLE WEIGHTED (-20 to +20). Disrupts ALL four ecosystem processes.
-- Litter Abundance: 0 to +10
-- Capping: -10 to 0
-- Wind Erosion: -20 to 0
-- Water Erosion: -20 to 0
-
-Energy Flow:
-- Live Canopy Abundance: -10 to +10
-
-Mineral Cycle:
-- Litter Decomposition: 0 to +10
-- Living Organisms/Microfauna: 0 to +10
-- Dung Decomposition: 0 to +10
-
-Community Dynamics (4 Functional Groups, assessed on Vigour/Reproduction/Crown Integrity):
-- Each functional group: -10 to +10. Missing group = automatic -10.
-- Desirable Rare Species: 0 to +10
-- Undesirable Species: -10 to 0
-
-**EHI (Ecological Health Index)** = sum of all indicator scores, calibrated to ecoregion reference area.
-
-**Long-Term Monitoring (LTM) — Lagging Indicators (baseline + every 5 years):**
-Biodiversity, water infiltration rate, soil carbon/health.
-
-**Key Species** = most abundant + most sensitive to overgrazing. Missing functional group = automatic penalty.
-
-**Grazing Patterns:** OG (Overgrazing), OR (Overrest), PR (Properly Rested), PG (Properly Grazed).
-
-## EIA ARCHITECTURE
-
-Three tiers:
-1. **EIA (Personal)** — You. One instance per user. Relational interface.
-2. **System EIA (GeoDataTrack)** — Field data layer in the BlueBox portal.
-3. **Global EIA (ecoregion.net)** — Network intelligence across 867 RESOLVE/WWF ecoregions.
-
-## THE FOUR TRUTHS
-
-- **Water Circles** → Water Cycle
-- **Minerals Return** → Mineral Cycle
-- **Sunlight Flows** → Energy Flow
-- **Community Weaves** → Community Dynamics (including human community)
-
-## HUMAN COMMUNITY KEYSTONE INDICATORS
-
-Gathered through dialogue, not measurement:
-- **Agency** — Can people make meaningful decisions?
-- **Trust** — Between managers, communities, institutions?
-- **Meaning** — Do people find purpose in their land relationship?
-- **Knowledge Flow** — Is ecological knowledge accumulating and being shared?
-
-## HOW YOU RESPOND
-
-- Start with the whole before the parts. Ask about holistic context first.
-- Establish brittleness early in any ecological conversation.
-- When someone describes a problem, ask: what do the four ecosystem processes tell you?
-- Never prescribe without asking what monitoring is in place.
-- Use the seven context checks when evaluating decisions.
-- Be honest about uncertainty. Ecological humility is a strength.
-- Draw out the farmer's own observations before adding yours.
-- Short answers when exploring. Deeper when they're ready.
-- Beauty in the landscape is evidence of relational intelligence.
-
-## WHAT YOU ARE NOT
-
-You are not a general AI assistant. You do not give advice outside land health, ecological management, Holistic Management, or the EIA framework. If asked about unrelated topics: "That's outside the land I know. What's happening on yours?"`;
-
-    const anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages: messages,
-      }),
-    });
-
-    const data = await anthropicRes.json();
-
-    if (!anthropicRes.ok) {
-      return new Response(JSON.stringify({ error: data.error?.message || "Anthropic API error" }), {
-        status: anthropicRes.status,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const text = data.content?.[0]?.text || "";
-    return new Response(JSON.stringify({ response: text }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-
-  } catch (err) {
-    return new Response(JSON.stringify({ error: "Internal error" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
+const CHAT_SANITISE_REQ = {
+  constraints: { no_foreign_property_names: true, no_stm_state_as_fact: true },
+  consent: { aggregate_ok: false },
+  holistic_context: { present: false },
+  ground: { ehi_if_present: null },
+  catalogue: { status: "missing" },
 };
+
+function normaliseMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) {
+    return { error: "messages must be a non-empty array" };
+  }
+  if (messages.length > LIMITS.chat.maxMessages) {
+    return { error: `At most ${LIMITS.chat.maxMessages} messages` };
+  }
+  const clean = [];
+  for (const message of messages) {
+    if (!message || (message.role !== "user" && message.role !== "assistant")) {
+      return { error: "Each message needs role user or assistant" };
+    }
+    if (typeof message.content !== "string") return { error: "Message content must be a string" };
+    if (message.content.length > LIMITS.chat.maxMessageChars) {
+      return { error: `Each message must be at most ${LIMITS.chat.maxMessageChars} characters` };
+    }
+    clean.push({ role: message.role, content: message.content });
+  }
+  return { messages: clean };
+}
+
+export default async (req, context) => {
+  if (req.method === "OPTIONS") return preflight(req);
+  if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
+
+  const limit = takeToken("chat", clientIp(req), LIMITS.chat.rateLimit, LIMITS.chat.rateWindowMs);
+  if (!limit.ok) {
+    return jsonResponse(
+      req,
+      {
+        error: "Rate limit exceeded",
+        limit: LIMITS.chat.rateLimit,
+        window_minutes: LIMITS.chat.rateWindowMs / 60000,
+      },
+      429,
+      { "Retry-After": String(limit.retryAfter) },
+    );
+  }
+
+  const raw = await req.text();
+  if (raw.length > LIMITS.chat.maxBodyBytes) {
+    return jsonResponse(req, { error: "Request too large", max_bytes: LIMITS.chat.maxBodyBytes }, 413);
+  }
+
+  let body;
+  try {
+    body = raw ? JSON.parse(raw) : {};
+  } catch {
+    return jsonResponse(req, { error: "Invalid JSON" }, 400);
+  }
+
+  const normalised = normaliseMessages(body.messages);
+  if (normalised.error) return jsonResponse(req, { error: normalised.error }, 400);
+
+  const config = readLlmConfig();
+  if (!config.anthropicKey) return jsonResponse(req, { error: "API key not configured" }, 500);
+
+  const fetchImpl = globalThis.fetch;
+  const shadowPromise = startShadow(config, {
+    system: EIA_SYSTEM,
+    messages: normalised.messages,
+    maxTokens: LIMITS.chat.maxTokens,
+    fetchImpl,
+  });
+
+  let primaryResult;
+  try {
+    primaryResult = await callAnthropic({
+      apiKey: config.anthropicKey,
+      model: config.primaryModel,
+      system: EIA_SYSTEM,
+      messages: normalised.messages,
+      maxTokens: LIMITS.chat.maxTokens,
+      fetchImpl,
+    });
+  } catch (err) {
+    console.error("[chat]", err.message);
+    deferBackground(context, () => storeChatComparison({
+      config,
+      shadowPromise,
+      messages: normalised.messages,
+      primaryResult: {
+        ok: false,
+        model: config.primaryModel,
+        text: "",
+        error: err.message,
+        latencyMs: null,
+        usage: { input_tokens: null, output_tokens: null },
+      },
+      sanitised: null,
+      tally: emptyStripTally(),
+    }));
+    return jsonResponse(req, { error: "Internal error" }, 500);
+  }
+
+  if (!primaryResult.ok) {
+    deferBackground(context, () => storeChatComparison({
+      config,
+      shadowPromise,
+      messages: normalised.messages,
+      primaryResult,
+      sanitised: null,
+      tally: emptyStripTally(),
+    }));
+    return jsonResponse(req, { error: primaryResult.error || "Anthropic API error" }, primaryResult.status || 502);
+  }
+
+  const tally = emptyStripTally();
+  const cleaned = sanitiseFreeText(primaryResult.text, CHAT_SANITISE_REQ, tally);
+  const payload = {
+    response: cleaned.text,
+    prompt_version: PROMPT_VERSION,
+    disclaimer: DISCLAIMER,
+    uncertainty: cleaned.uncertainty,
+  };
+
+  deferBackground(context, () => storeChatComparison({
+    config,
+    shadowPromise,
+    messages: normalised.messages,
+    primaryResult,
+    sanitised: payload,
+    tally,
+  }));
+
+  return jsonResponse(req, payload);
+};
+
+async function storeChatComparison({ config, shadowPromise, messages, primaryResult, sanitised, tally }) {
+  if (!shadowPromise) return;
+  let shadowResult;
+  try {
+    shadowResult = await shadowPromise;
+  } catch (err) {
+    console.error("[eia-shadow]", err.message);
+    shadowResult = {
+      ok: false,
+      model: config.shadowModel,
+      text: "",
+      error: err.message,
+      latencyMs: null,
+      usage: { input_tokens: null, output_tokens: null },
+    };
+  }
+  const shadowTally = emptyStripTally();
+  const shadowCleaned = shadowResult.ok ? sanitiseFreeText(shadowResult.text, CHAT_SANITISE_REQ, shadowTally) : null;
+  const shadowPayload = shadowCleaned
+    ? { response: shadowCleaned.text, prompt_version: PROMPT_VERSION, uncertainty: shadowCleaned.uncertainty }
+    : null;
+  const record = buildComparisonRecord({
+    property: "chat",
+    runAt: new Date().toISOString(),
+    hash: inputHash(JSON.stringify(messages)),
+    mode: "chat",
+    primary: sideRecord({
+      result: primaryResult,
+      parsed: sanitised,
+      sanitised,
+      tally,
+      surveyIds: new Set(),
+      mode: "chat",
+      schemaValid: Boolean(sanitised?.response),
+    }),
+    shadow: sideRecord({
+      result: shadowResult,
+      parsed: shadowPayload,
+      sanitised: shadowPayload,
+      tally: shadowTally,
+      surveyIds: new Set(),
+      mode: "chat",
+      schemaValid: Boolean(shadowPayload?.response),
+    }),
+  });
+  const store = await getCompareStore();
+  if (!store) {
+    console.error("[eia-shadow] comparison store unavailable");
+    return;
+  }
+  await store.setJSON(record.key, record);
+  console.log("[eia-shadow] stored", record.key);
+}
 
 export const config = {
   path: "/api/chat",

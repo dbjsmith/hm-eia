@@ -2,7 +2,11 @@
   "name": "hm-eia",
   "version": "1.0.0",
   "type": "module",
+  "scripts": {
+    "test": "node scripts/phase0-checks.mjs && node scripts/shadow-checks.mjs"
+  },
   "dependencies": {
+    "@netlify/blobs": "^11.1.4",
     "@netlify/functions": "^2.8.1"
   }
 }
