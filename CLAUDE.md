@@ -52,7 +52,7 @@ Assume you are wrong. Every plan is a hypothesis, not a prescription. Confidence
 |---|---|---|
 | Tier 1 | Current | Chat interface (this repo) |
 | Tier 2 | Next | RAG stack: Supabase pgvector + Netlify functions + React frontend |
-| Tier 3 | Future | Full agent with structured EOV database, GeoDataTrack data access, EHI calculation, web search; LangChain/LlamaIndex for tool orchestration |
+| Tier 3 | Future | Full agent with structured EOV database, GeoDataTrack data access, quote a recorded EHI (never compute one), web search; LangChain/LlamaIndex for tool orchestration |
 
 ## Key Conventions
 
@@ -105,8 +105,8 @@ These do not block current functionality but should be addressed when feasible:
 
 4. **Silent exit in chat early-exit guard.** When `submitUserQuestion()` runs with no `window._eiaCtx`, it returns silently with no debug log. Add a one-line `log('chat-skipped', 'no eiaCtx — surveys not loaded yet')` so future debug sessions catch this pattern instantly.
 
-5. **`mode` parameter mismatch.** Client sends `mode:'overview'` and `mode:'answer'` in calls to /.netlify/functions/eia-analyze, but the analyze function currently ignores `mode` in request parsing. Either start using it server-side or remove from client.
+5. **`mode` is read.** `eia-analyze` handles `mode:'overview'` (four-process reading) and `mode:'answer'` (returns `answer`). Kept here so the old mismatch is not reintroduced.
 
-6. **Hardcoded proxy URL in index.html** (~line 138): `'https://hm-eia.netlify.app/.netlify/functions/gdt-proxy'`. Breaks for staging/localhost deployments. Should use relative path or environment-derived value.
+6. **Function URLs in index.html are relative** (`/.netlify/functions/gdt-proxy` and `eia-analyze`), so staging and localhost hit the deployment that served the page.
 
 7. **Remaining "Skabenga" references** in README.md, eia-analyze.js, and comments in index.html. Survived the May 17 atomic JS-identifier rename which was scoped to JS code only. Sweep in a separate doc/comment cleanup commit.

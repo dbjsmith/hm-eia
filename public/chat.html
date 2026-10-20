@@ -479,9 +479,89 @@
       letter-spacing: 0.1em;
       text-align: center;
     }
+
+    .draft-note {
+      margin-top: 8px;
+      font-family: 'DM Mono', monospace;
+      font-size: 10px;
+      line-height: 1.4;
+      color: #c8b87a;
+    }
+
+    #gate {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: rgba(26, 18, 8, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    
+    #gate[hidden] {
+      display: none;
+    }
+
+    #gate form {
+      width: min(420px, 100%);
+      background: var(--earth);
+      border: 1px solid rgba(200,184,122,0.2);
+      border-radius: 8px;
+      padding: 28px 24px;
+    }
+
+    #gate h2 {
+      font-weight: 400;
+      font-size: 28px;
+      color: var(--straw);
+      margin-bottom: 8px;
+    }
+
+    #gate p {
+      color: var(--parchment);
+      margin-bottom: 16px;
+    }
+
+    #passphrase {
+      width: 100%;
+      background: transparent;
+      border: 1px solid rgba(200,184,122,0.3);
+      color: var(--cream);
+      border-radius: 6px;
+      padding: 10px 12px;
+      font: inherit;
+      margin-bottom: 12px;
+    }
+
+    #gate button {
+      background: var(--moss);
+      color: var(--cream);
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 14px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    #gate-err {
+      color: #e0a090;
+      min-height: 1.2em;
+      margin-top: 10px;
+      margin-bottom: 0;
+    }
   </style>
 </head>
 <body>
+  <div id="gate">
+    <form id="gate-form">
+      <h2>EIA</h2>
+      <p>This chat stays closed until you enter the passphrase. It is checked on the server and is not stored in the page.</p>
+      <input id="passphrase" type="password" autocomplete="current-password" placeholder="Passphrase">
+      <button type="submit">Open</button>
+      <p id="gate-err"></p>
+    </form>
+  </div>
   <div class="app">
 
     <!-- Sidebar -->
@@ -536,8 +616,8 @@
         <div class="starter-prompt" onclick="insertPrompt('A farmer in a brittleness-7 environment reports their springs have dried up over 20 years. They have been resting the land. What do you ask them first?')">
           Springs drying up after 20 years of rest…
         </div>
-        <div class="starter-prompt" onclick="insertPrompt('Given an EHI of -13 average across 10 sites in the Drought Corridor ecoregion, which ecosystem process should I focus on first and why?')">
-          EHI of -13 in the Drought Corridor — where to start?
+        <div class="starter-prompt" onclick="insertPrompt('On a brittle site, what would you look at first if you wanted to understand the water cycle, before anyone scored it?')">
+          Water cycle on a brittle site — what would you look at first?
         </div>
         <div class="starter-prompt" onclick="insertPrompt('What is the relationship between overgrazing and overrest in a brittle environment, and how do I tell them apart in the field?')">
           Overgrazing vs overrest — how to tell them apart?
@@ -545,8 +625,8 @@
         <div class="starter-prompt" onclick="insertPrompt('How does the predator-prey bunching dynamic relate to soil health, and how does Holistic Planned Grazing mimic it?')">
           Predator-prey dynamics and soil health…
         </div>
-        <div class="starter-prompt" onclick="insertPrompt('Walk me through how to calculate an EHI score from the 15 EOV indicators, with an example.')">
-          Walk me through calculating an EHI score…
+        <div class="starter-prompt" onclick="insertPrompt('EOV short-term monitoring has 15 indicators. What questions would you ask in the field across water, mineral, energy flow, and community dynamics?')">
+          Fifteen indicators — what would you ask in the field?
         </div>
         <div class="starter-prompt" onclick="insertPrompt('What questions should I ask a land manager who wants to restore a degraded grassland in a semi-arid environment?')">
           Restoring degraded grassland — what to ask first?
@@ -618,6 +698,46 @@
 
     let conversationHistory = [];
     let isLoading = false;
+    let sessionToken = sessionStorage.getItem('eia-session') || '';
+
+    const gateEl = document.getElementById('gate');
+    const gateErr = document.getElementById('gate-err');
+
+    function showGate(message) {
+      gateEl.hidden = false;
+      gateErr.textContent = message || '';
+    }
+
+    function hideGate() {
+      gateEl.hidden = true;
+      gateErr.textContent = '';
+    }
+
+    if (sessionToken) hideGate();
+
+    document.getElementById('gate-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      gateErr.textContent = '';
+      const passphrase = document.getElementById('passphrase').value;
+      try {
+        const res = await fetch('/api/eia-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grant: 'passphrase', passphrase })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.token) {
+          showGate(data.error || 'The passphrase was not accepted.');
+          return;
+        }
+        sessionToken = data.token;
+        sessionStorage.setItem('eia-session', sessionToken);
+        document.getElementById('passphrase').value = '';
+        hideGate();
+      } catch (err) {
+        showGate('Unable to reach EIA.');
+      }
+    });
 
     function autoResize(el) {
       el.style.height = 'auto';
@@ -647,7 +767,7 @@
         .replace(/$/, '</p>');
     }
 
-    function addMessage(role, content) {
+    function addMessage(role, content, meta) {
       if (emptyState && emptyState.parentNode) {
         emptyState.remove();
       }
@@ -672,6 +792,12 @@
 
       msgContent.appendChild(roleLabel);
       msgContent.appendChild(text);
+      if (meta && meta.label) {
+        const note = document.createElement('div');
+        note.className = 'draft-note';
+        note.textContent = meta.label + (meta.generated_at ? ' · ' + meta.generated_at : '');
+        msgContent.appendChild(note);
+      }
       div.appendChild(avatar);
       div.appendChild(msgContent);
 
@@ -711,6 +837,10 @@
     async function sendMessage() {
       const text = inputEl.value.trim();
       if (!text || isLoading) return;
+      if (!sessionToken) {
+        showGate('Enter the passphrase before asking.');
+        return;
+      }
 
       isLoading = true;
       sendBtn.disabled = true;
@@ -725,17 +855,24 @@
       try {
         const response = await fetch('/api/chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + sessionToken
+          },
           body: JSON.stringify({ messages: conversationHistory })
         });
 
         const data = await response.json();
         removeTyping();
 
-        if (data.error) {
+        if (response.status === 401 || response.status === 503) {
+          sessionToken = '';
+          sessionStorage.removeItem('eia-session');
+          showGate(data.error || 'The session was refused.');
+        } else if (data.error) {
           addMessage('assistant', `*Something went wrong: ${data.error}*`);
         } else {
-          addMessage('assistant', data.response);
+          addMessage('assistant', data.response, { label: data.label, generated_at: data.generated_at });
           conversationHistory.push({ role: 'assistant', content: data.response });
         }
       } catch (err) {
