@@ -38,6 +38,7 @@
 .sr{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
 #skn{font-size:13px;color:#444;line-height:1.65;margin-bottom:16px;font-style:italic;padding:10px 12px;background:#f7faf8;border-left:3px solid #0f6e56;border-radius:0 6px 6px 0}
 #skdisc{display:none;font-size:11px;color:#6a5a3a;background:#fff8e8;border:1px solid #f0e0b0;border-radius:6px;padding:8px 10px;margin-bottom:12px;line-height:1.45}
+.draft-note{font-size:10px;color:#6a5a3a;background:#fff8e8;border:1px solid #f0e0b0;border-radius:6px;padding:4px 6px;margin-bottom:6px;line-height:1.4}
 .proc{margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid #f0f0f0}
 .proc h3{font-size:12px;font-weight:700;color:#0f6e56;margin-bottom:6px}
 .proc .pk{font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:#888;margin-top:6px}
@@ -145,6 +146,15 @@ function failClosed(message){
   g('skn').textContent=message;
 }
 
+function originIsGdt(origin){
+  if(!origin)return false;
+  try{
+    var u=new URL(origin);
+    if(u.protocol!=='https:')return false;
+    return isGdtHttpsBase(u.origin);
+  }catch(ex){return false;}
+}
+
 function isGdtHttpsBase(base){
   try{
     var u=new URL(base);
@@ -168,6 +178,45 @@ function resolveBase(){
     return origin+base;
   }
   return base;
+}
+
+var _eiaSession='';
+
+function eiaAuthHeaders(){
+  var headers={'Content-Type':'application/json'};
+  if(_eiaSession) headers.Authorization='Bearer '+_eiaSession;
+  return headers;
+}
+
+function propertyApikeyFromNav(nav){
+  nav=nav||{};
+  var kind=String(nav.kind||'').toLowerCase();
+  var ak=nav.context_apikey||nav.apikey||nav._apikey||'';
+  if(kind==='property'&&ak) return ak;
+  if(nav.property_apikey) return nav.property_apikey;
+  return '';
+}
+
+function mintSession(nav){
+  var base=resolveBase();
+  return fetch('/api/eia-session',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      grant:'gdt',
+      base:base,
+      token:C.access_token,
+      property_apikey:propertyApikeyFromNav(nav)
+    })
+  }).then(function(r){
+    return r.text().then(function(txt){
+      var d={};try{d=JSON.parse(txt);}catch(ex){d={};}
+      if(r.status!==200||!d.token) throw new Error(d.error||'EIA session was refused');
+      _eiaSession=d.token;
+      log('eia-session',{property:d.property_apikey?d.property_apikey.substring(0,8)+'...':'none'});
+      return _eiaSession;
+    });
+  });
 }
 
 function proxy(path,params){
@@ -383,9 +432,9 @@ var _answerCache={};
 
 function fetchEiaAnswer(question, navContext, surveys, answersBySurvey){
   if(_answerCache[question])return Promise.resolve(_answerCache[question]);
-  return fetch('/.netlify/functions/eia-analyze',{
+  return fetch('/api/eia-analyze',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:eiaAuthHeaders(),
     body:JSON.stringify({
       mode:'answer',
       question:question,
@@ -393,13 +442,16 @@ function fetchEiaAnswer(question, navContext, surveys, answersBySurvey){
       surveys:surveys,
       answers_by_survey:answersBySurvey
     })
-  }).then(function(r){return r.json();}).then(function(d){
-    var answer=d&&d.answer;
-    if(!answer){
-      answer='I do not have a cited reading for that yet. What do you see on this ground that the surveys do not show?';
+  }).then(function(r){return r.json().then(function(d){return {status:r.status,body:d||{}};});}).then(function(res){
+    if(res.status===401||res.status===503) throw new Error(res.body.error||'EIA session was refused');
+    var d=res.body;
+    var text=d&&d.answer;
+    if(!text){
+      text='I do not have a cited reading for that yet. What do you see on this ground that the surveys do not show?';
     }
-    _answerCache[question]=answer;
-    return answer;
+    var packed={text:text,label:d.label||'',generated_at:d.generated_at||''};
+    _answerCache[question]=packed;
+    return packed;
   });
 }
 
@@ -459,7 +511,16 @@ function buildQuestionItem(q,number,ctx,opts){
     fetchEiaAnswer(qText, ctx.nav, ctx.surveys, ctx.answers).then(function(answer){
       loaded=true;
       answerBox.className='sqa';
-      answerBox.textContent=answer;
+      answerBox.textContent='';
+      if(answer.label){
+        var note=document.createElement('div');
+        note.className='draft-note';
+        note.textContent=answer.label+(answer.generated_at?' · '+answer.generated_at:'');
+        answerBox.appendChild(note);
+      }
+      var body=document.createElement('div');
+      body.textContent=answer.text||'';
+      answerBox.appendChild(body);
     }).catch(function(x){
       answerBox.className='sqa err';
       answerBox.textContent='Couldn\'t generate insight: '+x.message;
@@ -559,7 +620,11 @@ function renderEia(a){
   g('skb').style.display='inline-flex';
   g('skb').textContent='Reading';
   var disc=g('skdisc');
-  if(a.disclaimer){disc.style.display='block';disc.textContent=a.disclaimer;}
+  var parts=[];
+  if(a.label) parts.push(a.label);
+  if(a.generated_at) parts.push(a.generated_at);
+  if(a.disclaimer) parts.push(a.disclaimer);
+  if(parts.length){disc.style.display='block';disc.textContent=parts.join(' · ');}
   else{disc.style.display='none';disc.textContent='';}
   g('skn').textContent=a.narrative||'';
   renderReading(a);
@@ -607,6 +672,11 @@ function boot(){
     return;
   }
 
+  var sessionPromise=mintSession(nav).catch(function(ex){
+    failClosed(ex.message);
+    throw ex;
+  });
+
   fetchSurveys(nav).then(function(sv){
     renderSurveys(sv);
     ss('on',nav.label||'');
@@ -635,9 +705,10 @@ function boot(){
     fetchAnswers(svSample).then(function(by){
       // Store context for follow-up answer calls when questions are clicked
       window._eiaCtx={nav:nav,surveys:svSample,answers:by};
-      return fetch('/.netlify/functions/eia-analyze',{
+      return sessionPromise.then(function(){
+      return fetch('/api/eia-analyze',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:eiaAuthHeaders(),
         body:JSON.stringify({mode:'overview',navigation_context:nav,surveys:svSample,answers_by_survey:by})
       }).then(function(r){return r.text();})
         .then(function(t){
@@ -650,6 +721,13 @@ function boot(){
           g('skl').style.display='none';
           renderEia({narrative:'Insight generation unavailable: '+x.message,questions:[]});
         });
+      });
+    }).catch(function(x){
+      err('analyze:'+x.message);
+      g('skl').style.display='none';
+      g('skw').style.display='none';
+      g('skc').style.display='block';
+      g('skn').textContent=x.message;
     });
 
   }).catch(function(x){ss('er','Error');err('boot:'+x.message);});
@@ -658,6 +736,10 @@ function boot(){
 var _booted=false;
 window.addEventListener('message',function(ev){
   if(!ev.data||ev.data.type!=='host:init')return;
+  if(!originIsGdt(ev.origin)){
+    log('host:init','ignored — origin not on the GeoDataTrack allow-list');
+    return;
+  }
   if(_booted){log('host:init','ignored — already booted');return;}
   _booted=true;
   GDT_ORIGIN=ev.origin||'';

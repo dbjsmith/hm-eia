@@ -32,6 +32,9 @@ export function memoryCompareStore() {
       }
       return { blobs };
     },
+    async delete(key) {
+      map.delete(key);
+    },
   };
 }
 

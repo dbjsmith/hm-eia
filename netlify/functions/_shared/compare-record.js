@@ -18,9 +18,16 @@ export function propertySlug(name) {
   return slug || "unspecified";
 }
 
-export function comparisonKey({ property, runAt, hash }) {
+export function comparisonKey({ property, propertyApikey, runAt, hash }) {
   const stamp = String(runAt).replace(/[:.]/g, "-");
-  return `runs/${propertySlug(property)}/${stamp}-${hash}`;
+  const id = propertySlug(propertyApikey || property);
+  return `runs/${id}/${stamp}-${hash}`;
+}
+
+export function isExpired(record, now = Date.now()) {
+  if (!record?.expires_at) return false;
+  const ms = Date.parse(record.expires_at);
+  return Number.isFinite(ms) && ms <= now;
 }
 
 export function surveyIdsFrom(surveys) {
@@ -103,16 +110,25 @@ export function sideRecord({ result, parsed, sanitised, tally, surveyIds, mode, 
 
 export function buildComparisonRecord({
   property,
+  propertyApikey = "",
+  consentRef = "",
+  retentionDays = 180,
   runAt,
   hash,
   mode,
   primary,
   shadow,
 }) {
-  const key = comparisonKey({ property, runAt, hash });
+  const days = Number.isFinite(Number(retentionDays)) && Number(retentionDays) > 0 ? Number(retentionDays) : 180;
+  const start = Date.parse(runAt);
+  const expires = new Date((Number.isFinite(start) ? start : Date.now()) + days * 24 * 60 * 60 * 1000).toISOString();
+  const key = comparisonKey({ property, propertyApikey, runAt, hash });
   return {
     key,
     property: property || "unspecified",
+    property_apikey: propertyApikey || "",
+    consent_ref: consentRef || "",
+    expires_at: expires,
     run_at: runAt,
     input_hash: hash,
     prompt_version: PROMPT_VERSION,
@@ -201,6 +217,9 @@ export function comparisonsToCsv(records) {
   const headers = [
     "key",
     "property",
+    "property_apikey",
+    "consent_ref",
+    "expires_at",
     "run_at",
     "mode",
     "prompt_version",
@@ -241,6 +260,9 @@ export function comparisonsToCsv(records) {
           [
             record.key,
             record.property,
+            record.property_apikey,
+            record.consent_ref,
+            record.expires_at,
             record.run_at,
             record.mode,
             record.prompt_version,
@@ -280,6 +302,9 @@ export function summariseRecord(record) {
   return {
     key: record.key,
     property: record.property,
+    property_apikey: record.property_apikey || "",
+    consent_ref: record.consent_ref || "",
+    expires_at: record.expires_at || "",
     run_at: record.run_at,
     mode: record.mode,
     prompt_version: record.prompt_version,

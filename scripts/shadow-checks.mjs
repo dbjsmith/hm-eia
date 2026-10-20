@@ -11,12 +11,19 @@ import eiaCompare from "../netlify/functions/eia-compare.js";
 import { EIA_SYSTEM, PROMPT_VERSION } from "../netlify/functions/_shared/eia-prompt.js";
 import { DEFAULT_SHADOW_MODEL } from "../netlify/functions/_shared/llm.js";
 import { memoryCompareStore, setCompareStoreForTests } from "../netlify/functions/_shared/compare-store.js";
+import { signSession } from "../netlify/functions/_shared/eia-auth.js";
+import { memorySpendStore, setSpendStoreForTests } from "../netlify/functions/_shared/spend-guard.js";
 
 const store = memoryCompareStore();
 setCompareStoreForTests(store);
+setSpendStoreForTests(memorySpendStore());
 
 process.env.ANTHROPIC_API_KEY = "test-key";
 process.env.COMPARE_ADMIN_TOKEN = "compare-secret";
+process.env.EIA_AUTH_SECRET = "test-auth-secret-0123456789";
+process.env.EIA_APP_SECRET = "test-app-secret-0123456789";
+process.env.EIA_DAILY_ANALYZE_CAP = "1000";
+process.env.EIA_DAILY_CHAT_CAP = "1000";
 
 let passed = 0;
 
@@ -29,15 +36,20 @@ function check(name, fn) {
     });
 }
 
-function request(body, ip) {
+function request(body, ip, token = process.env.EIA_APP_SECRET) {
   return new Request("https://hm-eia.netlify.app/.netlify/functions/eia-analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-nf-client-connection-ip": ip,
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(body),
   });
+}
+
+function propertySession() {
+  return signSession({ sub: "gdt", property_apikey: "prop-rbh" });
 }
 
 const bundle = {
@@ -127,6 +139,9 @@ await check("shadow on returns the primary unchanged and stores both sanitised o
 
   process.env.SHADOW_ENABLED = "true";
   process.env.SHADOW_PROVIDER_BASE_URL = "https://openrouter.ai/api/v1";
+  process.env.SHADOW_PROVIDER_HOSTS = "openrouter.ai";
+  process.env.SHADOW_ALLOWED_PROPERTIES = "prop-rbh";
+  process.env.SHADOW_CONSENT_REF = "TruQuest test consent";
   delete process.env.SHADOW_MODEL;
   process.env.SHADOW_API_KEY = "shadow-key";
   const calls = [];
@@ -139,9 +154,11 @@ await check("shadow on returns the primary unchanged and stores both sanitised o
   const bucket = jobsFor();
   try {
     const started = Date.now();
-    const res = await eiaAnalyze(request(bundle, "198.51.100.3"), bucket.context);
+    const res = await eiaAnalyze(request(bundle, "198.51.100.3", propertySession()), bucket.context);
     assert.ok(Date.now() - started < 1000);
     const body = await res.json();
+    delete body.generated_at;
+    delete primaryBody.generated_at;
     assert.deepEqual(body, primaryBody);
     assert.equal(body.prompt_version, PROMPT_VERSION);
     assert.equal("shadow" in body, false);
@@ -161,6 +178,9 @@ await check("shadow on returns the primary unchanged and stores both sanitised o
     assert.equal(listed.blobs.length, 1);
     const record = await store.get(listed.blobs[0].key, { type: "json" });
     assert.equal(record.property, "RBH Stretton");
+    assert.equal(record.property_apikey, "prop-rbh");
+    assert.equal(record.consent_ref, "TruQuest test consent");
+    assert.ok(Date.parse(record.expires_at) > Date.parse(record.run_at));
     assert.equal(record.prompt_version, PROMPT_VERSION);
     assert.equal(record.input_hash.length, 20);
     assert.equal(record.primary.model, "claude-sonnet-4-20250514");
@@ -193,7 +213,7 @@ await check("a shadow timeout does not delay or change the primary response", as
   const bucket = jobsFor();
   try {
     const started = Date.now();
-    const res = await eiaAnalyze(request(bundle, "198.51.100.4"), bucket.context);
+    const res = await eiaAnalyze(request(bundle, "198.51.100.4", propertySession()), bucket.context);
     const elapsed = Date.now() - started;
     assert.ok(elapsed < 150, `primary waited ${elapsed}ms`);
     const body = await res.json();
@@ -263,7 +283,11 @@ await check("chat shadow off does not call the second provider", async () => {
   try {
     const res = await chat(new Request("https://hm-eia.netlify.app/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-nf-client-connection-ip": "198.51.100.5" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-nf-client-connection-ip": "198.51.100.5",
+        Authorization: `Bearer ${process.env.EIA_APP_SECRET}`,
+      },
       body: JSON.stringify({ messages: [{ role: "user", content: "What is the water doing?" }] }),
     }));
     const body = await res.json();

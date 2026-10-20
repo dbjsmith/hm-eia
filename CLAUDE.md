@@ -52,7 +52,7 @@ Assume you are wrong. Every plan is a hypothesis, not a prescription. Confidence
 |---|---|---|
 | Tier 1 | Current | Chat interface (this repo) |
 | Tier 2 | Next | RAG stack: Supabase pgvector + Netlify functions + React frontend |
-| Tier 3 | Future | Full agent with structured EOV database, GeoDataTrack data access, EHI calculation, web search; LangChain/LlamaIndex for tool orchestration |
+| Tier 3 | Future | Full agent with structured EOV database, GeoDataTrack data access, quote a recorded EHI (never compute one), web search; LangChain/LlamaIndex for tool orchestration |
 
 ## Key Conventions
 

@@ -61,6 +61,7 @@
     <div class="row">
       <button id="back" class="btn secondary" type="button">All runs</button>
       <button id="save" class="btn" type="button">Save marks</button>
+      <button id="delete-run" class="btn secondary" type="button">Delete this run</button>
       <span id="save-state" class="muted"></span>
     </div>
     <div id="detail-body"></div>
@@ -73,16 +74,6 @@
   var marks = {};
 
   function g(id) { return document.getElementById(id); }
-
-  function takeTokenFromQuery() {
-    var params = new URLSearchParams(location.search);
-    var fromQuery = params.get("token") || "";
-    if (!fromQuery) return;
-    token = fromQuery;
-    params.delete("token");
-    var next = params.toString();
-    history.replaceState(null, "", location.pathname + (next ? "?" + next : ""));
-  }
 
   async function api(path, options) {
     options = options || {};
@@ -227,6 +218,13 @@
       g("save-state").textContent = "Saved";
     }).catch(function (err) { g("save-state").textContent = err.message; });
   });
+  g("delete-run").addEventListener("click", function () {
+    if (!current || !current.key) return;
+    if (!window.confirm("Delete this comparison run? This cannot be undone.")) return;
+    api("?key=" + encodeURIComponent(current.key), { method: "DELETE" })
+      .then(function () { current = null; return showList(); })
+      .catch(function (err) { g("save-state").textContent = err.message; });
+  });
   g("csv").addEventListener("click", function () {
     api("?format=csv").then(function (res) { return res.blob(); }).then(function (blob) {
       var url = URL.createObjectURL(blob);
@@ -238,7 +236,6 @@
     }).catch(function (err) { alert(err.message); });
   });
 
-  takeTokenFromQuery();
   if (token) showList().catch(function (err) { g("gate-err").textContent = err.message; g("gate").hidden = false; });
 })();
 </script>

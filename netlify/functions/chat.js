@@ -1,9 +1,11 @@
 import { preflight, jsonResponse } from "./_shared/cors.js";
 import { LIMITS } from "./_shared/limits.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
-import { DISCLAIMER, EIA_SYSTEM, PROMPT_VERSION } from "./_shared/eia-prompt.js";
+import { authoriseRequest } from "./_shared/eia-auth.js";
+import { takeDailyAllowance } from "./_shared/spend-guard.js";
+import { draftStamp, EIA_SYSTEM, PROMPT_VERSION } from "./_shared/eia-prompt.js";
 import { emptyStripTally, sanitiseFreeText } from "./_shared/eia-sanitiser.js";
-import { callAnthropic, deferBackground, readLlmConfig, startShadow } from "./_shared/llm.js";
+import { callAnthropic, deferBackground, readLlmConfig, shadowDecision, startShadow } from "./_shared/llm.js";
 import { getCompareStore } from "./_shared/compare-store.js";
 import { buildComparisonRecord, inputHash, sideRecord } from "./_shared/compare-record.js";
 
@@ -45,6 +47,9 @@ export default async (req, context) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
 
+  const auth = authoriseRequest(req);
+  if (!auth.ok) return jsonResponse(req, { error: auth.error }, auth.status);
+
   const limit = takeToken("chat", clientIp(req), LIMITS.chat.rateLimit, LIMITS.chat.rateWindowMs);
   if (!limit.ok) {
     return jsonResponse(
@@ -77,13 +82,26 @@ export default async (req, context) => {
   const config = readLlmConfig();
   if (!config.anthropicKey) return jsonResponse(req, { error: "API key not configured" }, 500);
 
+  const allowance = await takeDailyAllowance("chat");
+  if (!allowance.ok) {
+    return jsonResponse(
+      req,
+      { error: allowance.error, cap: allowance.cap },
+      allowance.status,
+      allowance.status === 429 ? { "Retry-After": "86400" } : {},
+    );
+  }
+
   const fetchImpl = globalThis.fetch;
-  const shadowPromise = startShadow(config, {
-    system: EIA_SYSTEM,
-    messages: normalised.messages,
-    maxTokens: LIMITS.chat.maxTokens,
-    fetchImpl,
-  });
+  const decision = shadowDecision(config, { channel: "chat", propertyApikey: auth.property_apikey });
+  const shadowPromise = decision.run
+    ? startShadow(config, {
+      system: EIA_SYSTEM,
+      messages: normalised.messages,
+      maxTokens: LIMITS.chat.maxTokens,
+      fetchImpl,
+    })
+    : null;
 
   let primaryResult;
   try {
@@ -99,6 +117,7 @@ export default async (req, context) => {
     console.error("[chat]", err.message);
     deferBackground(context, () => storeChatComparison({
       config,
+      decision,
       shadowPromise,
       messages: normalised.messages,
       primaryResult: {
@@ -118,6 +137,7 @@ export default async (req, context) => {
   if (!primaryResult.ok) {
     deferBackground(context, () => storeChatComparison({
       config,
+      decision,
       shadowPromise,
       messages: normalised.messages,
       primaryResult,
@@ -132,12 +152,13 @@ export default async (req, context) => {
   const payload = {
     response: cleaned.text,
     prompt_version: PROMPT_VERSION,
-    disclaimer: DISCLAIMER,
+    ...draftStamp(),
     uncertainty: cleaned.uncertainty,
   };
 
   deferBackground(context, () => storeChatComparison({
     config,
+    decision,
     shadowPromise,
     messages: normalised.messages,
     primaryResult,
@@ -148,7 +169,7 @@ export default async (req, context) => {
   return jsonResponse(req, payload);
 };
 
-async function storeChatComparison({ config, shadowPromise, messages, primaryResult, sanitised, tally }) {
+async function storeChatComparison({ config, decision, shadowPromise, messages, primaryResult, sanitised, tally }) {
   if (!shadowPromise) return;
   let shadowResult;
   try {
@@ -167,10 +188,13 @@ async function storeChatComparison({ config, shadowPromise, messages, primaryRes
   const shadowTally = emptyStripTally();
   const shadowCleaned = shadowResult.ok ? sanitiseFreeText(shadowResult.text, CHAT_SANITISE_REQ, shadowTally) : null;
   const shadowPayload = shadowCleaned
-    ? { response: shadowCleaned.text, prompt_version: PROMPT_VERSION, uncertainty: shadowCleaned.uncertainty }
+    ? { response: shadowCleaned.text, prompt_version: PROMPT_VERSION, ...draftStamp(), uncertainty: shadowCleaned.uncertainty }
     : null;
   const record = buildComparisonRecord({
     property: "chat",
+    propertyApikey: decision?.property_apikey || "",
+    consentRef: decision?.consent_ref || "",
+    retentionDays: config.shadowRetentionDays,
     runAt: new Date().toISOString(),
     hash: inputHash(JSON.stringify(messages)),
     mode: "chat",
@@ -204,4 +228,9 @@ async function storeChatComparison({ config, shadowPromise, messages, primaryRes
 
 export const config = {
   path: "/api/chat",
+  rateLimit: {
+    windowLimit: 20,
+    windowSize: 60,
+    aggregateBy: ["ip", "domain"],
+  },
 };

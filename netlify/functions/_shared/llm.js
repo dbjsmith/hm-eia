@@ -16,6 +16,9 @@
 export const DEFAULT_PRIMARY_MODEL = "claude-sonnet-4-20250514";
 export const DEFAULT_SHADOW_MODEL = "meta-llama/llama-3.3-70b-instruct";
 export const DEFAULT_SHADOW_TIMEOUT_MS = 25000;
+export const DEFAULT_SHADOW_RETENTION_DAYS = 180;
+
+const LOCAL_SHADOW_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 export function envGet(name) {
   try {
@@ -34,16 +37,72 @@ function flagOn(value) {
   return text === "true" || text === "1" || text === "yes";
 }
 
+export function parseCsv(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function retentionDays(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_SHADOW_RETENTION_DAYS;
+  return Math.min(Math.floor(n), 3650);
+}
+
 export function readLlmConfig() {
   const timeoutRaw = Number(envGet("SHADOW_TIMEOUT_MS"));
   return {
     primaryModel: envGet("PRIMARY_MODEL") || DEFAULT_PRIMARY_MODEL,
     anthropicKey: envGet("ANTHROPIC_API_KEY") || "",
     shadowEnabled: flagOn(envGet("SHADOW_ENABLED")),
+    shadowChatAllowed: flagOn(envGet("SHADOW_CHAT_ALLOWED")),
     shadowBaseUrl: envGet("SHADOW_PROVIDER_BASE_URL").replace(/\/+$/, ""),
     shadowModel: envGet("SHADOW_MODEL") || DEFAULT_SHADOW_MODEL,
     shadowApiKey: envGet("SHADOW_API_KEY") || "",
     shadowTimeoutMs: Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : DEFAULT_SHADOW_TIMEOUT_MS,
+    shadowAllowedProperties: parseCsv(envGet("SHADOW_ALLOWED_PROPERTIES")),
+    shadowConsentRef: String(envGet("SHADOW_CONSENT_REF") || "").trim(),
+    shadowProviderHosts: parseCsv(envGet("SHADOW_PROVIDER_HOSTS")).map((host) => host.toLowerCase()),
+    shadowRetentionDays: retentionDays(envGet("SHADOW_RETENTION_DAYS")),
+  };
+}
+
+export function propertyAllowed(list, apikey) {
+  if (!apikey) return false;
+  const want = String(apikey).trim().toLowerCase();
+  return (list || []).some((item) => String(item).trim().toLowerCase() === want);
+}
+
+export function shadowHostAllowed(baseUrl, extraHosts = []) {
+  let url;
+  try {
+    url = new URL(String(baseUrl || ""));
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  if (!host) return false;
+  if (LOCAL_SHADOW_HOSTS.has(host)) return url.protocol === "http:" || url.protocol === "https:";
+  if (url.protocol !== "https:") return false;
+  return extraHosts.map((item) => String(item).toLowerCase()).includes(host);
+}
+
+export function shadowDecision(config, { channel = "analyze", propertyApikey = "" } = {}) {
+  if (!config?.shadowEnabled) return { run: false, reason: "disabled" };
+  if (channel === "chat" && !config.shadowChatAllowed) return { run: false, reason: "chat_not_allowed" };
+  if (!propertyAllowed(config.shadowAllowedProperties, propertyApikey)) {
+    return { run: false, reason: "property_not_allowed" };
+  }
+  if (!config.shadowConsentRef) return { run: false, reason: "consent_ref_missing" };
+  if (!shadowHostAllowed(config.shadowBaseUrl, config.shadowProviderHosts)) {
+    return { run: false, reason: "host_not_allowed" };
+  }
+  return {
+    run: true,
+    reason: "allowed",
+    consent_ref: config.shadowConsentRef,
+    property_apikey: String(propertyApikey),
   };
 }
 

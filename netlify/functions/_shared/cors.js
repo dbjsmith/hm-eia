@@ -12,7 +12,8 @@
  * A request whose Origin host equals this function's Host is treated as
  * same-site so the hm-eia widget can call its own functions. Any other
  * origin is rejected with 403 and no Access-Control-Allow-Origin.
- * Requests with no Origin (non-browser) are allowed and get no ACAO header.
+ * Requests with no Origin (non-browser) are not blocked here. That is not
+ * authentication. chat and eia-analyze still require a credential.
  */
 
 const DEFAULT_ALLOWED_ORIGINS = [
@@ -97,8 +98,8 @@ function applyCors(headers, decision) {
   headers.Vary = "Origin";
   if (decision.reflect) {
     headers["Access-Control-Allow-Origin"] = decision.reflect;
-    headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
-    headers["Access-Control-Allow-Headers"] = "Content-Type";
+    headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, x-eia-token, x-compare-token";
   }
 }
 

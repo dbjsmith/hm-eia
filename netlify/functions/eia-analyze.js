@@ -1,9 +1,25 @@
 import { preflight, jsonResponse } from "./_shared/cors.js";
 import { LIMITS } from "./_shared/limits.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
-import { ANSWER_SCHEMA, DISCLAIMER, EIA_SYSTEM, PROMPT_VERSION, READING_SCHEMA } from "./_shared/eia-prompt.js";
-import { emptyStripTally, sanitiseEiaReturn, stripGradeKeys } from "./_shared/eia-sanitiser.js";
-import { callAnthropic, deferBackground, envGet, readLlmConfig, startShadow } from "./_shared/llm.js";
+import { authoriseRequest } from "./_shared/eia-auth.js";
+import { takeDailyAllowance } from "./_shared/spend-guard.js";
+import { loadEcoregionPackage } from "./_shared/ecoregion-package.js";
+import {
+  ANSWER_SCHEMA,
+  buildForceConstraintsPrompt,
+  draftStamp,
+  EIA_SYSTEM,
+  PROMPT_VERSION,
+  READING_SCHEMA,
+} from "./_shared/eia-prompt.js";
+import {
+  emptyStripTally,
+  recordedEhiFromEvidence,
+  sanitiseEiaReturn,
+  statusFromPackage,
+  stripGradeKeys,
+} from "./_shared/eia-sanitiser.js";
+import { callAnthropic, deferBackground, readLlmConfig, shadowDecision, startShadow } from "./_shared/llm.js";
 import { getCompareStore } from "./_shared/compare-store.js";
 import {
   buildComparisonRecord,
@@ -31,27 +47,44 @@ const PROCESS_LABELS = {
 
 function requestContext(body) {
   const nav = body.navigation_context || {};
-  const propertyName = nav.label || body.ground?.property_name || "";
+  const propertyName = nav.label || "";
+  const recorded = recordedEhiFromEvidence(body.surveys, body.answers_by_survey);
   return {
     constraints: {
-      ...(body.constraints || {}),
       no_foreign_property_names: true,
       no_stm_state_as_fact: true,
       return_as: "signals_and_questions",
     },
     consent: {
-      ...(body.consent || {}),
       aggregate_ok: false,
     },
-    holistic_context: body.holistic_context || { present: false },
+    // Browser holistic context is not trusted in this phase. A later
+    // authenticated companion call can set it on the server.
+    holistic_context: { present: false },
     navigation_context: nav,
     ground: {
-      ...(body.ground || {}),
       property_name: propertyName,
-      // Phase 0 does not treat an index as verified, even if the client sent one.
-      ehi_if_present: null,
+      ehi_if_present: recorded ? recorded.value : null,
     },
-    catalogue: body.catalogue || { status: "missing" },
+    recorded_ehi: recorded,
+    known_survey_ids: surveyIdsFrom(body.surveys),
+    // Catalogue status is decided here, or by applyCatalogue from ecoregion.net.
+    // The browser body and the model output are not a source.
+    catalogue: { status: "missing", use: "scaffold_only", source: "server" },
+  };
+}
+
+async function applyCatalogue(ctx, body, fetchImpl) {
+  const ecoId = typeof body.eco_id === "string" ? body.eco_id.trim() : "";
+  if (!ecoId) return;
+  const loaded = await loadEcoregionPackage(ecoId, { fetchImpl });
+  const derived = statusFromPackage(loaded.ok ? loaded.package : null);
+  ctx.catalogue = {
+    status: derived.status,
+    use: derived.use,
+    scoring_allowed: derived.scoring_allowed === true,
+    ecoregion_id: derived.ecoregion_id || ecoId,
+    source: loaded.source,
   };
 }
 
@@ -78,7 +111,7 @@ function evidenceBlock(surveys, answersBySurvey) {
   return lines.join("\n") || "No survey answers were provided.";
 }
 
-function overviewUser(body) {
+function overviewUser(body, ctx) {
   const nav = body.navigation_context || {};
   const propertyName = nav.label || "this property";
   const kind = nav.kind || "property";
@@ -91,10 +124,12 @@ Surveys in this request: ${Array.isArray(body.surveys) ? body.surveys.length : 0
 ${evidenceBlock(body.surveys, body.answers_by_survey)}
 
 ## Task
-${READING_SCHEMA}`;
+${READING_SCHEMA}
+
+${buildForceConstraintsPrompt(ctx)}`;
 }
 
-function answerUser(body) {
+function answerUser(body, ctx) {
   const nav = body.navigation_context || {};
   return `## This ground
 Name: ${nav.label || "this property"}
@@ -107,7 +142,9 @@ ${evidenceBlock(body.surveys, body.answers_by_survey)}
 ${String(body.question || "").slice(0, 4000)}
 
 ## Task
-${ANSWER_SCHEMA}`;
+${ANSWER_SCHEMA}
+
+${buildForceConstraintsPrompt(ctx)}`;
 }
 
 function parseModelJson(rawText) {
@@ -189,7 +226,7 @@ function finaliseOverview(parsed, reqContext, tally = null) {
   const processes = again.processes;
   return {
     prompt_version: PROMPT_VERSION,
-    disclaimer: DISCLAIMER,
+    ...draftStamp(),
     narrative:
       again.narrative ||
       "This is a reading, not a verdict. The questions below are invitations to look.",
@@ -217,7 +254,7 @@ function finaliseAnswer(parsed, reqContext, tally = null) {
   const answer = String(cleaned.answer || cleaned.narrative || "").trim();
   return {
     prompt_version: PROMPT_VERSION,
-    disclaimer: DISCLAIMER,
+    ...draftStamp(),
     answer:
       answer ||
       "I do not have a cited reading for that yet. What do you see on this ground that the surveys do not show?",
@@ -256,6 +293,7 @@ function shapeParsed(text, mode) {
 
 async function storeComparison({
   config,
+  decision,
   shadowPromise,
   mode,
   ctx,
@@ -294,6 +332,9 @@ async function storeComparison({
   const runAt = new Date().toISOString();
   const record = buildComparisonRecord({
     property,
+    propertyApikey: decision?.property_apikey || "",
+    consentRef: decision?.consent_ref || "",
+    retentionDays: config.shadowRetentionDays,
     runAt,
     hash: inputHash(user),
     mode,
@@ -328,6 +369,9 @@ async function storeComparison({
 export default async (req, context) => {
   if (req.method === "OPTIONS") return preflight(req);
   if (req.method !== "POST") return jsonResponse(req, { error: "Method not allowed" }, 405);
+
+  const auth = authoriseRequest(req);
+  if (!auth.ok) return jsonResponse(req, { error: auth.error }, auth.status);
 
   const limit = takeToken("analyze", clientIp(req), LIMITS.analyze.rateLimit, LIMITS.analyze.rateWindowMs);
   if (!limit.ok) {
@@ -364,17 +408,30 @@ export default async (req, context) => {
   const config = readLlmConfig();
   if (!config.anthropicKey) return jsonResponse(req, { error: "ANTHROPIC_API_KEY not set" }, 500);
 
-  const ctx = requestContext(body);
-  const user = mode === "answer" ? answerUser(body) : overviewUser(body);
-  const messages = [{ role: "user", content: user }];
-  const fetchImpl = globalThis.fetch;
+  const allowance = await takeDailyAllowance("analyze");
+  if (!allowance.ok) {
+    return jsonResponse(
+      req,
+      { error: allowance.error, cap: allowance.cap },
+      allowance.status,
+      allowance.status === 429 ? { "Retry-After": "86400" } : {},
+    );
+  }
 
-  const shadowPromise = startShadow(config, {
-    system: EIA_SYSTEM,
-    messages,
-    maxTokens: LIMITS.analyze.maxTokens,
-    fetchImpl,
-  });
+  const ctx = requestContext(body);
+  const fetchImpl = globalThis.fetch;
+  await applyCatalogue(ctx, body, fetchImpl);
+  const user = mode === "answer" ? answerUser(body, ctx) : overviewUser(body, ctx);
+  const messages = [{ role: "user", content: user }];
+  const decision = shadowDecision(config, { channel: "analyze", propertyApikey: auth.property_apikey });
+  const shadowPromise = decision.run
+    ? startShadow(config, {
+      system: EIA_SYSTEM,
+      messages,
+      maxTokens: LIMITS.analyze.maxTokens,
+      fetchImpl,
+    })
+    : null;
 
   let primaryResult;
   try {
@@ -407,6 +464,7 @@ export default async (req, context) => {
 
   deferBackground(context, () => storeComparison({
     config,
+    decision,
     shadowPromise,
     mode,
     ctx,
@@ -421,4 +479,13 @@ export default async (req, context) => {
 
   console.log("[eia-analyze]", { mode, prompt_version: PROMPT_VERSION, uncertainty: payload.uncertainty?.length || 0 });
   return jsonResponse(req, payload, 200);
+};
+
+export const config = {
+  path: ["/api/eia-analyze", "/.netlify/functions/eia-analyze"],
+  rateLimit: {
+    windowLimit: 8,
+    windowSize: 60,
+    aggregateBy: ["ip", "domain"],
+  },
 };

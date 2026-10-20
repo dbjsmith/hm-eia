@@ -13,8 +13,14 @@ import { originAllowed } from "../netlify/functions/_shared/cors.js";
 import { EIA_SYSTEM, PROMPT_VERSION } from "../netlify/functions/_shared/eia-prompt.js";
 import { sanitiseEiaReturn } from "../netlify/functions/_shared/eia-sanitiser.js";
 import { LIMITS } from "../netlify/functions/_shared/limits.js";
+import { memorySpendStore, setSpendStoreForTests } from "../netlify/functions/_shared/spend-guard.js";
 
 process.env.SHADOW_ENABLED = "false";
+process.env.EIA_AUTH_SECRET = "test-auth-secret-0123456789";
+process.env.EIA_APP_SECRET = "test-app-secret-0123456789";
+process.env.EIA_DAILY_ANALYZE_CAP = "1000";
+process.env.EIA_DAILY_CHAT_CAP = "1000";
+setSpendStoreForTests(memorySpendStore());
 
 const FORBIDDEN_KEYS = ["ehi", "journey_stage", "limiting_process", "priority_lever"];
 let passed = 0;
@@ -49,8 +55,11 @@ function assertNoGradeKeys(value) {
   }
 }
 
-function jsonRequest(url, { method = "POST", origin, host, ip, body } = {}) {
+function jsonRequest(url, { method = "POST", origin, host, ip, body, auth = true } = {}) {
   const headers = { "Content-Type": "application/json" };
+  if (auth && method !== "OPTIONS" && method !== "GET") {
+    headers.Authorization = `Bearer ${process.env.EIA_APP_SECRET}`;
+  }
   if (origin) headers.Origin = origin;
   if (host) headers.Host = host;
   if (ip) headers["x-nf-client-connection-ip"] = ip;
@@ -70,7 +79,7 @@ const baseContext = {
 };
 
 await check("prompt is the versioned apprentice stance and has no score ranges", () => {
-  assert.equal(PROMPT_VERSION, "eia-system-v3-2026-10-12");
+  assert.equal(PROMPT_VERSION, "eia-system-v3.1-2026-10-20");
   assert.match(EIA_SYSTEM, /apprentice/i);
   assert.match(EIA_SYSTEM, /15 indicators, not 16/);
   assert.match(EIA_SYSTEM, /accredited verifier decides/);

@@ -21,9 +21,26 @@ const GRADE_KEYS = new Set([
   "limitingprocess",
   "priority_lever",
   "prioritylever",
+  "score",
+  "grade",
+  "health_index",
+  "ecological_health_index",
+  "ecosystem_health_index",
+  "stage",
+  "rank",
+  "rating",
+  "scoring_allowed",
 ]);
 
-const FOREIGN_NAMES = ["Knepp", "Carrifran", "Brown's Ranch", "Browns Ranch", "White Oak Pastures"];
+const FOREIGN_NAMES = [
+  "Knepp",
+  "Carrifran",
+  "Brown's Ranch",
+  "Browns Ranch",
+  "White Oak Pastures",
+  "Yellowstone",
+  "Serengeti",
+];
 
 const USE_RANK = { scaffold_only: 0, questions_only: 1, scoring_allowed: 2 };
 
@@ -41,12 +58,22 @@ const SKIP_STRING_KEYS = new Set([
   "level",
   "survey_id",
   "date",
-  "falsifier",
   "field_method",
+  "generated_at",
+  "label",
 ]);
 
 const PRESCRIBE =
-  /\b(you should|you must|increase stocking|reduce stocking|destock|rest the paddock|apply herbicide|graze harder|move the (stock|animals|herd)|most important management action)\b/i;
+  /\b(you should|you must|you need to|i recommend|the best action is|increase stocking|reduce stocking|destock(?:\s+by\s+half)?|rest the paddock|rest it|apply herbicide|graze harder|move the (stock|animals|herd|cattle)|most important management action)\b/i;
+
+const HARD_GRADE =
+  /\blimiting\s+(?:process|factor)\b|\bjourney\s+stage\b|\bgrade[ds]?\b|\bscored\b|\bscore\s+of\b|\bpriority\s+(?:lever|action)\b/i;
+
+const EHI_LIKE =
+  /\bEHI\b|\b(?:ecological|ecosystem)\s+health\s+index\b|\b\d+\s*\/\s*100\b|\bout\s+of\s+100\b/i;
+
+const SEEK_INSTEAD = "What would you look at on this ground, and what would change your mind?";
+const WATCH_INSTEAD = "What would you watch on this ground first, and what would show this guess was wrong?";
 
 const HM_PROSE =
   /\b(cause\s*&\s*effect check|cause and effect check|weak link check|marginal reaction check|gross profit analysis|seven (context |hm )?checks (confirm|show|say))\b/i;
@@ -153,6 +180,9 @@ function stripPeerLanguage(text) {
     /\bquartiles?\b/gi,
     /\btop\s+\d+\s*%/gi,
     /\bbottom\s+third\b/gi,
+    /\bbottom\s+half\b/gi,
+    /\bbottom\s+quartile\b/gi,
+    /\bbottom\s+\d+\s*%/gi,
     /\branked\b/gi,
     /\bcompared to other properties\b/gi,
     /\baverage for this ecoregion\b/gi,
@@ -204,11 +234,84 @@ export function softenStateFacts(text) {
   return next;
 }
 
-function rewritePrescription(text) {
-  return String(text).replace(
-    new RegExp(PRESCRIBE.source, "gi"),
-    "Hypothesis to test, not an instruction — what would you watch on this ground first",
-  );
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function quotesRecordedEhi(text, recorded) {
+  if (!recorded || recorded.value == null || recorded.value === "") return false;
+  const value = String(recorded.value);
+  if (!new RegExp(`\\b${escapeRegExp(value)}\\b`).test(String(text))) return false;
+  return /\brecorded\b/i.test(String(text));
+}
+
+function splitSentences(text) {
+  return String(text).split(/(?<=[.!?])\s+|\n+/);
+}
+
+export function rewriteStewardText(text, recorded = null, uncertainty = null, tally = null) {
+  let gradeHits = 0;
+  let ehiHits = 0;
+  let prescribeHits = 0;
+  const next = splitSentences(text).map((sentence) => {
+    const hard = HARD_GRADE.test(sentence);
+    const ehi = EHI_LIKE.test(sentence);
+    const prescribe = PRESCRIBE.test(sentence);
+    const quoted = quotesRecordedEhi(sentence, recorded);
+    if ((hard || (ehi && !quoted)) && !(quoted && !hard && !prescribe)) {
+      gradeHits += 1;
+      if (ehi && !quoted) ehiHits += 1;
+      return SEEK_INSTEAD;
+    }
+    if (prescribe) {
+      prescribeHits += 1;
+      return WATCH_INSTEAD;
+    }
+    return sentence;
+  });
+  if (gradeHits) {
+    if (uncertainty) pushUnique(uncertainty, "grade_language_removed");
+    bump(tally, "grade", gradeHits);
+  }
+  if (ehiHits) {
+    if (uncertainty) pushUnique(uncertainty, "ehi_absent");
+    bump(tally, "ehi", ehiHits);
+  }
+  if (prescribeHits) {
+    if (uncertainty) pushUnique(uncertainty, "prescription_removed");
+    bump(tally, "prescription", prescribeHits);
+  }
+  const collapsed = next
+    .join(" ")
+    .replace(new RegExp(`(?:${escapeRegExp(SEEK_INSTEAD)}\\s*){2,}`, "g"), `${SEEK_INSTEAD} `)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return collapsed;
+}
+
+function normaliseStatus(status) {
+  return ["present_human_vetted", "ai_draft_not_vetted", "missing"].includes(status) ? status : "missing";
+}
+
+export function recordedEhiFromEvidence(surveys, answersBySurvey) {
+  const question = /\b(ehi|ecosystem health index|ecological health index)\b/i;
+  for (const survey of Array.isArray(surveys) ? surveys : []) {
+    if (!survey || typeof survey !== "object") continue;
+    const id = survey._apikey || survey.apikey || survey.id;
+    if (!id) continue;
+    const answers = (answersBySurvey && (answersBySurvey[id] || answersBySurvey[survey._apikey])) || [];
+    for (const answer of answers) {
+      if (!question.test(String(answer?.question || ""))) continue;
+      const match = String(answer?.answer ?? "").match(/-?\d+(?:\.\d+)?/);
+      if (!match) continue;
+      return {
+        value: match[0],
+        survey_id: String(id),
+        date: String(survey._date || survey.date || survey.survey_date || ""),
+      };
+    }
+  }
+  return null;
 }
 
 function allowedPlaceNames(req) {
@@ -321,6 +424,79 @@ function warnCoupled(out, uncertainty) {
   }
 }
 
+function knownSurveyIdSet(req) {
+  const raw = req?.known_survey_ids;
+  if (raw == null) return null;
+  if (raw instanceof Set) return new Set([...raw].map((id) => String(id)));
+  if (!Array.isArray(raw)) return null;
+  return new Set(raw.map((id) => String(id)));
+}
+
+function relocateBadCitations(out, ids, uncertainty) {
+  if (!ids) return [];
+  const rejected = [];
+  let moved = false;
+  const remember = (id) => {
+    moved = true;
+    if (id) rejected.push(String(id));
+  };
+  if (out.processes && typeof out.processes === "object") {
+    for (const block of Object.values(out.processes)) {
+      if (!block || typeof block !== "object" || !Array.isArray(block.observations)) continue;
+      const keep = [];
+      const gaps = Array.isArray(block.gaps) ? block.gaps.slice() : [];
+      for (const item of block.observations) {
+        const id = item?.citation?.survey_id ? String(item.citation.survey_id) : "";
+        if (id && ids.has(id)) {
+          keep.push(item);
+          continue;
+        }
+        remember(id);
+        const gap = { ...(item && typeof item === "object" ? item : { text: String(item || "") }) };
+        gap.confidence = "low";
+        gap.citation = null;
+        if (!String(gap.falsifier || "").trim()) {
+          gap.falsifier = "A survey id from this record would be needed before this can be read as an observation.";
+        }
+        gaps.push(gap);
+      }
+      block.observations = keep;
+      block.gaps = gaps;
+    }
+  }
+  if (Array.isArray(out.signals)) {
+    const keep = [];
+    for (const signal of out.signals) {
+      const id = signal?.citation?.survey_id ? String(signal.citation.survey_id) : "";
+      if (!id || ids.has(id)) {
+        keep.push(signal);
+        continue;
+      }
+      remember(id);
+    }
+    out.signals = keep;
+  }
+  if (Array.isArray(out.citations)) {
+    out.citations = out.citations.filter((cite) => {
+      const id = cite?.survey_id ? String(cite.survey_id) : "";
+      if (id && ids.has(id)) return true;
+      remember(id);
+      return false;
+    });
+  }
+  if (moved) pushUnique(uncertainty, "citation_not_in_record");
+  return rejected;
+}
+
+function redactRejectedIds(text, rejected) {
+  let next = String(text);
+  for (const id of rejected) {
+    if (!id) continue;
+    next = next.split(id).join("a survey id that is not in this record");
+  }
+  return next;
+}
+
 function flagUncited(out, uncertainty) {
   const lists = [];
   if (out.processes) {
@@ -356,26 +532,53 @@ function countPatternHits(text, patterns) {
   return count;
 }
 
+export function statusFromPackage(pkg) {
+  if (!pkg || typeof pkg !== "object") {
+    return { status: "missing", use: "scaffold_only", ecoregion_id: null, scoring_allowed: false };
+  }
+  const cat = pkg.catalogue && typeof pkg.catalogue === "object" ? pkg.catalogue : {};
+  const status = normaliseStatus(cat.status);
+  let use = allowedUseForStatus(status);
+  if (typeof cat.use === "string" && USE_RANK[cat.use] != null) use = minUse(cat.use, use);
+  if (cat.scoring_allowed !== true && use === "scoring_allowed") use = "questions_only";
+  return {
+    status,
+    use,
+    ecoregion_id: pkg.eco_id || pkg.ecoregion_id || cat.ecoregion_id || null,
+    scoring_allowed: use === "scoring_allowed" && cat.scoring_allowed === true && status === "present_human_vetted",
+  };
+}
+
 export function sanitiseEiaReturn(req = {}, raw = {}, tally = null) {
   const uncertainty = [];
   const out = clone(raw);
   if (!Array.isArray(out.uncertainty)) out.uncertainty = [];
 
-  const statusIn = out.catalogue?.status || req.catalogue?.status || "missing";
-  const status = ["present_human_vetted", "ai_draft_not_vetted", "missing"].includes(statusIn)
-    ? statusIn
-    : "missing";
-  const requestedUse = out.catalogue?.use || "scaffold_only";
-  const allowed = allowedUseForStatus(status);
-  const use = minUse(requestedUse, allowed);
+  const serverStatus = normaliseStatus(req.catalogue?.status);
+  const modelStatus = out.catalogue && typeof out.catalogue === "object" ? normaliseStatus(out.catalogue.status) : null;
+  const modelUse = out.catalogue && typeof out.catalogue === "object" ? out.catalogue.use : null;
+  if (out.catalogue && typeof out.catalogue === "object" && modelStatus !== serverStatus) {
+    pushUnique(uncertainty, "catalogue_status_overridden");
+  }
+  const allowed = allowedUseForStatus(serverStatus);
+  let use = allowed;
+  if (req.catalogue?.use && USE_RANK[req.catalogue.use] != null) use = minUse(req.catalogue.use, allowed);
+  if (req.catalogue?.scoring_allowed !== true && use === "scoring_allowed") use = "questions_only";
+  if (modelUse && USE_RANK[modelUse] != null && modelUse !== use) {
+    pushUnique(uncertainty, "catalogue_use_downgraded");
+  }
   out.catalogue = {
-    ...(out.catalogue && typeof out.catalogue === "object" ? out.catalogue : {}),
-    status,
+    ecoregion_id: req.catalogue?.ecoregion_id || null,
+    status: serverStatus,
     use,
+    source: req.catalogue?.source || "server",
   };
-  if (use !== requestedUse) pushUnique(uncertainty, "catalogue_use_downgraded");
 
   stripGradeKeys(out, uncertainty, tally);
+
+  const surveyIds = knownSurveyIdSet(req);
+  const rejectedIds = relocateBadCitations(out, surveyIds, uncertainty);
+  const recorded = req.recorded_ehi || null;
 
   const holisticPresent = req.holistic_context?.present === true || req.consent?.holistic_context_shared === true;
   if (!holisticPresent) {
@@ -391,13 +594,13 @@ export function sanitiseEiaReturn(req = {}, raw = {}, tally = null) {
   const noForeign = req.constraints?.no_foreign_property_names !== false;
   const noStm = req.constraints?.no_stm_state_as_fact !== false || use !== "scoring_allowed";
   const aggregateOk = req.consent?.aggregate_ok === true;
-  const ehiPresent = req.ground?.ehi_if_present != null;
   const names = allowedPlaceNames(req);
   let hmProse = false;
 
   walkStrings(out, (value) => {
-    let text = value;
-    if (!ehiPresent) {
+    let text = redactRejectedIds(value, rejectedIds);
+    text = rewriteStewardText(text, recorded, uncertainty, tally);
+    if (!recorded) {
       const next = stripEhiText(text);
       if (next !== text) {
         text = next;

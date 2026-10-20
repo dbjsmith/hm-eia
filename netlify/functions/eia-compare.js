@@ -2,11 +2,12 @@ import { timingSafeEqual } from "node:crypto";
 import { corsDecision, jsonResponse, preflight } from "./_shared/cors.js";
 import { envGet } from "./_shared/llm.js";
 import { getCompareStore } from "./_shared/compare-store.js";
-import { cleanMarks, comparisonsToCsv, summariseRecord } from "./_shared/compare-record.js";
+import { cleanMarks, comparisonsToCsv, isExpired, propertySlug, summariseRecord } from "./_shared/compare-record.js";
 
 /**
  * Admin comparison API. Refuses every request unless COMPARE_ADMIN_TOKEN
- * is set and presented as x-compare-token, Authorization: Bearer, or ?token=.
+ * is set and presented as x-compare-token or Authorization: Bearer.
+ * The token is not read from the query string.
  */
 
 function presentedToken(req) {
@@ -14,11 +15,7 @@ function presentedToken(req) {
   if (header) return header.trim();
   const auth = req.headers.get("authorization") || "";
   if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
-  try {
-    return new URL(req.url).searchParams.get("token") || "";
-  } catch {
-    return "";
-  }
+  return "";
 }
 
 function tokenMatches(given, expected) {
@@ -29,15 +26,42 @@ function tokenMatches(given, expected) {
   return timingSafeEqual(left, right);
 }
 
-async function loadAll(store) {
+async function loadAll(store, now = Date.now()) {
   const listed = await store.list({ prefix: "runs/" });
   const records = [];
   for (const blob of (listed.blobs || []).slice(0, 200)) {
     const record = await store.get(blob.key, { type: "json" });
-    if (record) records.push(record);
+    if (!record) continue;
+    if (isExpired(record, now)) {
+      if (typeof store.delete === "function") await store.delete(blob.key);
+      continue;
+    }
+    records.push(record);
   }
   records.sort((a, b) => String(b.run_at).localeCompare(String(a.run_at)));
   return records;
+}
+
+async function deleteMatching(store, { key, propertyApikey }) {
+  if (key) {
+    const existing = await store.get(key, { type: "json" });
+    if (!existing) return { deleted: 0, missing: true };
+    await store.delete(key);
+    return { deleted: 1, missing: false };
+  }
+  const want = String(propertyApikey || "").trim().toLowerCase();
+  const prefix = `runs/${propertySlug(propertyApikey)}/`;
+  const listed = await store.list({ prefix: "runs/" });
+  let deleted = 0;
+  for (const blob of listed.blobs || []) {
+    const record = await store.get(blob.key, { type: "json" });
+    const apikey = String(record?.property_apikey || "").trim().toLowerCase();
+    if (blob.key.startsWith(prefix) || (want && apikey === want)) {
+      await store.delete(blob.key);
+      deleted += 1;
+    }
+  }
+  return { deleted, missing: false };
 }
 
 function csvResponse(req, csv) {
@@ -79,11 +103,24 @@ export default async (req) => {
     const key = url.searchParams.get("key");
     if (key) {
       const record = await store.get(key, { type: "json" });
-      if (!record) return jsonResponse(req, { error: "Not found" }, 404);
+      if (!record || isExpired(record)) {
+        if (record && typeof store.delete === "function") await store.delete(key);
+        return jsonResponse(req, { error: "Not found" }, 404);
+      }
       return jsonResponse(req, record, 200);
     }
     const records = await loadAll(store);
     return jsonResponse(req, { runs: records.map(summariseRecord) }, 200);
+  }
+
+  if (req.method === "DELETE") {
+    const key = url.searchParams.get("key");
+    const propertyApikey = url.searchParams.get("property_apikey");
+    if (!key && !propertyApikey) return jsonResponse(req, { error: "Missing key or property_apikey" }, 400);
+    if (typeof store.delete !== "function") return jsonResponse(req, { error: "Comparison store cannot delete" }, 503);
+    const result = await deleteMatching(store, { key, propertyApikey });
+    if (result.missing) return jsonResponse(req, { error: "Not found" }, 404);
+    return jsonResponse(req, { deleted: result.deleted }, 200);
   }
 
   if (req.method === "POST") {
