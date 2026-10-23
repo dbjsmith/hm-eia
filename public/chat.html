@@ -241,6 +241,28 @@
       letter-spacing: 0.12em;
     }
 
+    .chat-title-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    a.eia-about {
+      color: var(--straw);
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .footer-area a.eia-about {
+      display: inline-block;
+      margin-top: 10px;
+    }
+
     .status-dot {
       width: 7px;
       height: 7px;
@@ -638,13 +660,17 @@
           AI · Ecological Intelligence · Relational Intelligence<br>
           WeCology / GeoDataTrack · hm-eia.net
         </div>
+        <a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a>
       </div>
     </aside>
 
     <!-- Main chat -->
     <main class="main">
       <div class="chat-header">
-        <span class="chat-header-title">Ecologically Intelligent Agent</span>
+        <div class="chat-title-row">
+          <span class="chat-header-title">Ecologically Intelligent Agent</span>
+          <a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a>
+        </div>
         <div class="status-dot"></div>
       </div>
 
@@ -884,6 +910,15 @@
       sendBtn.disabled = false;
       inputEl.focus();
     }
+  </script>
+  <script>
+  (function(){
+    var framed=false;
+    try{framed=window.parent&&window.parent!==window;}catch(ex){framed=true;}
+    if(framed)return;
+    var links=document.querySelectorAll('a.eia-about');
+    for(var i=0;i<links.length;i++){links[i].removeAttribute('target');links[i].removeAttribute('rel');}
+  })();
   </script>
 </body>
 </html>

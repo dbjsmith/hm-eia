@@ -1,5 +1,42 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="EIA is the Ecologically Intelligent Agent. It reads what the land is already doing and asks questions. It never grades land and never produces scores.">
+<link rel="canonical" href="https://hm-eia.net/about/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="EIA">
+<meta property="og:title" content="EIA — Ecologically Intelligent Agent">
+<meta property="og:description" content="A seeker, not a judge. EIA reads what the land is already doing and asks questions. It never grades land and never produces scores.">
+<meta property="og:url" content="https://hm-eia.net/about/">
+<meta property="og:image" content="https://hm-eia.net/about/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Placeholder image for EIA, the Ecologically Intelligent Agent. Not the product logo.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="EIA — Ecologically Intelligent Agent">
+<meta name="twitter:description" content="A seeker, not a judge. EIA reads what the land is already doing and asks questions. It never grades land and never produces scores.">
+<meta name="twitter:image" content="https://hm-eia.net/about/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script>
+/* Top-level visitors are sent to the public homepage.
+   Inside a frame this returns immediately and the launch below is unchanged.
+   ?widget=1 keeps this shell. */
+(function(){
+  var framed=false;
+  try{framed=window.parent&&window.parent!==window;}catch(ex){framed=true;}
+  if(framed)return;
+  var stay=/(?:^|[?&])widget=1(?:&|$)/.test(location.search);
+  if(!stay){location.replace('/about/');return;}
+  document.addEventListener('DOMContentLoaded',function(){
+    var links=document.querySelectorAll('a.eia-about');
+    for(var i=0;i<links.length;i++){links[i].removeAttribute('target');links[i].removeAttribute('rel');}
+    var dn=document.getElementById('dn');
+    if(!dn||dn.querySelector('a[href="/about/"]'))return;
+    dn.insertAdjacentHTML('beforeend',' <a href="/about/">What is EIA?</a>');
+  });
+})();
+</script>
 <title>EIA</title><style>
 *{box-sizing:border-box;margin:0;padding:0}html,body{height:100%}body{font-family:-apple-system,sans-serif;font-size:14px;background:#f5f5f0;color:#1a1a1a;overflow:hidden}
 #app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
@@ -10,6 +47,9 @@
 @media (max-width:720px){#cols{flex-direction:column;overflow-y:auto}#cols>.card{flex:0 0 auto;height:auto;overflow:visible;margin:6px 12px}#cols>.card:first-child{margin-top:10px}#cols>.card:last-child{margin-bottom:10px}}
 #hdr{background:#0f6e56;color:#fff;padding:12px 16px;display:flex;align-items:center;gap:10px}
 #hdr h1{font-size:15px;font-weight:600}#hs{font-size:12px;opacity:.8;margin-left:auto}
+#hdr a.eia-about{color:#fff;font-size:12px;font-weight:600;text-decoration:underline;text-underline-offset:2px}
+#eia-foot{flex-shrink:0;padding:6px 16px 8px;background:#eef3f0;border-top:1px solid #e4e4dc;font-size:12px}
+#eia-foot a.eia-about{color:#0f6e56;font-weight:600}
 #sd{width:8px;height:8px;border-radius:50%;background:#fff;opacity:.5;flex-shrink:0}
 #sd.on{opacity:1;background:#7fff7f}#sd.er{background:#ff6b6b;opacity:1}
 #dn{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;margin:12px;padding:10px;font-size:13px;color:#856404}
@@ -81,8 +121,9 @@
 #erl{color:#ff6b6b;font-family:monospace;font-size:11px;padding:0 12px 8px}
 </style></head><body>
 <div id="app">
-<div id="hdr"><div id="sd"></div><h1>EIA v3.7</h1><span id="hs"></span></div>
+<div id="hdr"><div id="sd"></div><h1>EIA v3.7</h1><a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a><span id="hs"></span></div>
 <div id="dn"><strong>Outside GeoDataTrack</strong> - Waiting for host:init.</div>
+<noscript><p style="margin:0 12px 12px;font-size:13px"><a href="/about/">What is EIA?</a></p></noscript>
 
 <div id="cols">
 <!-- Surveys -->
@@ -121,6 +162,7 @@
 
 <!-- Debug -->
 <details id="dbp"><summary>Debug log</summary><div id="erl"></div><div id="dbl"></div></details>
+<footer id="eia-foot"><a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a></footer>
 </div>
 <script>
 (function(){
