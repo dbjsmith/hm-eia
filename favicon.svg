@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>EIA placeholder mark</title>
+  <rect width="32" height="32" rx="6" fill="#0f6e56"/>
+  <rect x="4.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea"/>
+  <rect x="17.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.82"/>
+  <rect x="4.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.64"/>
+  <rect x="17.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.46"/>
+</svg>

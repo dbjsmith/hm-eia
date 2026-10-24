@@ -11,6 +11,10 @@
   header { background: #0f6e56; color: #fff; padding: 16px 20px; }
   header h1 { margin: 0; font-size: 18px; font-weight: 650; }
   header p { margin: 4px 0 0; font-size: 13px; opacity: .9; }
+  .head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  header a.eia-about { color: #fff; font-size: 13px; font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
+  .eia-foot { padding: 4px 20px 28px; font-size: 13px; }
+  .eia-foot a.eia-about { color: #0f6e56; font-weight: 650; }
   main { padding: 16px 20px 40px; max-width: 1200px; margin: 0 auto; }
   .gate { background: #fff; border-radius: 10px; padding: 16px; max-width: 420px; }
   label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 6px; }
@@ -40,7 +44,10 @@
 </head>
 <body>
 <header>
-  <h1>EIA comparison</h1>
+  <div class="head-row">
+    <h1>EIA comparison</h1>
+    <a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a>
+  </div>
   <p>Primary is what stewards see. Shadow is the open-weight run. Marks stay in this admin view.</p>
 </header>
 <main>
@@ -237,6 +244,16 @@
   });
 
   if (token) showList().catch(function (err) { g("gate-err").textContent = err.message; g("gate").hidden = false; });
+})();
+</script>
+<footer class="eia-foot"><a class="eia-about" href="/about/" target="_blank" rel="noopener">About</a></footer>
+<script>
+(function(){
+  var framed=false;
+  try{framed=window.parent&&window.parent!==window;}catch(ex){framed=true;}
+  if(framed)return;
+  var links=document.querySelectorAll('a.eia-about');
+  for(var i=0;i<links.length;i++){links[i].removeAttribute('target');links[i].removeAttribute('rel');}
 })();
 </script>
 </body>

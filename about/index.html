@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EIA — Ecologically Intelligent Agent</title>
+  <meta name="description" content="Soil is the soul of our planet. EIA reads what the land is already doing and asks questions.">
+  <link rel="canonical" href="https://hm-eia.net/about/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="EIA">
+  <meta property="og:title" content="EIA — Ecologically Intelligent Agent">
+  <meta property="og:description" content="Soil is the soul of our planet. EIA reads what the land is already doing and asks questions.">
+  <meta property="og:url" content="https://hm-eia.net/about/">
+  <meta property="og:image" content="https://hm-eia.net/about/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Placeholder image for EIA, the Ecologically Intelligent Agent. Not the product logo.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="EIA — Ecologically Intelligent Agent">
+  <meta name="twitter:description" content="Soil is the soul of our planet. EIA reads what the land is already doing and asks questions.">
+  <meta name="twitter:image" content="https://hm-eia.net/about/og.png">
+  <meta name="theme-color" content="#0f6e56">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <style>
+    :root {
+      --paper: #f3efe6;
+      --paper-2: #f7f4ee;
+      --card: #fffcf7;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #e0d8c8;
+      --green: #0f6e56;
+      --green-dark: #0b5644;
+      --focus: #0f6e56;
+    }
+    * { box-sizing: border-box; }
+    html { color-scheme: light; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 1.05rem;
+      line-height: 1.6;
+    }
+    a { color: var(--green-dark); }
+    a:hover { color: var(--green); }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .skip {
+      position: absolute;
+      left: 8px;
+      top: -40px;
+      background: #fff;
+      padding: 8px 12px;
+      z-index: 3;
+    }
+    .skip:focus { top: 8px; }
+    .top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px 20px;
+      padding: 16px 22px;
+      background: var(--paper-2);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink);
+      text-decoration: none;
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: 1.35rem;
+      letter-spacing: 0.02em;
+    }
+    .brand svg { display: block; }
+    .wrap {
+      width: min(1040px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 36px 0 64px;
+    }
+    h1, h2, h3 {
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+    }
+    h1 { font-size: clamp(2.1rem, 4vw, 3.4rem); margin: 0 0 8px; }
+    h2 { font-size: clamp(1.55rem, 2.4vw, 2rem); margin: 0 0 12px; }
+    h3 { font-size: 1.2rem; margin: 0 0 8px; }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .tagline {
+      max-width: 40rem;
+      margin: 0 0 12px;
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: clamp(1.55rem, 2.6vw, 2.05rem);
+      line-height: 1.25;
+      color: var(--green-dark);
+    }
+    .lead {
+      max-width: 40rem;
+      margin: 0 0 8px;
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: clamp(1.15rem, 1.8vw, 1.4rem);
+      line-height: 1.35;
+    }
+    .status { max-width: 40rem; color: var(--muted); margin: 0 0 22px; }
+    .hero-mark { margin: 0 0 18px; }
+    .placeholder-note { margin: 8px 0 0; color: var(--muted); font-size: 0.85rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 8px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-weight: 650;
+      font-size: 0.98rem;
+    }
+    .btn-primary { background: var(--green); color: #fff; }
+    .btn-primary:hover { background: var(--green-dark); color: #fff; }
+    .btn-secondary { background: transparent; color: var(--green-dark); border: 1.5px solid var(--green); }
+    .btn-secondary:hover { background: #e7f3ef; }
+    .hint { margin: 6px 0 0; color: var(--muted); font-size: 0.92rem; max-width: 40rem; }
+    .onpage {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      margin: 28px 0 8px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      font-size: 0.92rem;
+    }
+    section { margin-top: 48px; }
+    section p, section li { max-width: 42rem; }
+    .who { padding-left: 1.15rem; }
+    .who li { margin: 0 0 8px; }
+    .processes {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin: 18px 0 0;
+      padding: 0;
+      list-style: none;
+      max-width: 52rem;
+    }
+    @media (min-width: 760px) {
+      .processes { grid-template-columns: 1fr 1fr; }
+    }
+    .processes li {
+      max-width: none;
+      margin: 0;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px 12px;
+    }
+    .processes h3 { color: var(--green-dark); }
+    .processes p { margin: 0; }
+    .limits {
+      background: var(--card);
+      border-left: 4px solid var(--green);
+      padding: 4px 0 4px 18px;
+      margin: 12px 0 0;
+    }
+    .limits li { margin: 0 0 10px; }
+    .layers {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+      margin-top: 16px;
+    }
+    @media (min-width: 800px) {
+      .layers { grid-template-columns: 1fr 1fr; }
+    }
+    .layer {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 16px 14px;
+    }
+    .layer p { margin: 0; max-width: none; }
+    blockquote {
+      margin: 16px 0;
+      padding: 4px 0 4px 16px;
+      border-left: 3px solid var(--green);
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: 1.12rem;
+      line-height: 1.45;
+      max-width: 40rem;
+    }
+    blockquote p { margin: 0; max-width: none; }
+    figcaption, .cite { color: var(--muted); font-size: 0.92rem; }
+    .panes {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    @media (min-width: 760px) {
+      .panes { grid-template-columns: 1fr 1fr; }
+    }
+    .pane {
+      border: 1px dashed #b7ad9a;
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: transparent;
+    }
+    .pane h3 { margin-bottom: 6px; }
+    .pane p { margin: 0; }
+    .open-block .hint + .hint { margin-top: 0; }
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 22px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    footer .wrap { width: min(1040px, calc(100% - 8px)); padding: 0; }
+    footer p { margin: 0 0 8px; max-width: 42rem; }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#what">Skip to the explanation</a>
+  <header class="top">
+    <a class="brand" href="/about/">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#0f6e56"/>
+        <rect x="4.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea"/>
+        <rect x="17.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.82"/>
+        <rect x="4.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.64"/>
+        <rect x="17.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.46"/>
+      </svg>
+      EIA
+    </a>
+    <a class="btn btn-primary" href="https://app.geodatatrack.com">Open in GeoDataTrack</a>
+  </header>
+
+  <div class="wrap">
+    <p class="eyebrow">WeCology pilot</p>
+    <div class="hero-mark">
+      <svg width="64" height="64" viewBox="0 0 32 32" role="img" aria-label="Placeholder mark. Four panes. Not the product logo.">
+        <rect width="32" height="32" rx="6" fill="#0f6e56"/>
+        <rect x="4.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea"/>
+        <rect x="17.5" y="4.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.82"/>
+        <rect x="4.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.64"/>
+        <rect x="17.5" y="17.5" width="10" height="10" rx="1.2" fill="#f4f1ea" fill-opacity="0.46"/>
+      </svg>
+      <p class="placeholder-note">Placeholder mark. Not the product logo. The four panes stand for four ways of looking, not for a condition and not for a result.</p>
+    </div>
+    <h1>EIA, the Ecologically Intelligent Agent</h1>
+    <p class="tagline">Soil is the soul of our planet.</p>
+    <p class="lead">A seeker, not a judge. EIA reads what the land is already doing and asks better questions.</p>
+    <p class="status">This site hosts the pilot. On 23 October 2026 WeCology decided EIA’s home will be <a href="https://ecoregion.net/eia/">ecoregion.net/eia/</a>. That move is planned, and it is not built yet. The account there is the one that will grow. This page says what the pilot is, who it is for, and how the layers meet it.</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="https://app.geodatatrack.com">Open EIA in GeoDataTrack</a>
+      <a class="btn btn-secondary" href="/public/chat.html">Passphrase chat</a>
+    </div>
+    <p class="hint">In GeoDataTrack: sign in, then open EIA from Manage Apps. The passphrase chat is the other door. It is for the pilot, and it stays shut until the server is configured.</p>
+    <p class="hint"><a href="https://ecoregion.net/eia/">Read the full account on ecoregion.net</a></p>
+
+    <nav class="onpage" aria-label="On this page">
+      <a href="#what">What EIA is</a>
+      <a href="#who">Who it is for</a>
+      <a href="#does">What it does</a>
+      <a href="#limits">Limits</a>
+      <a href="#layers">Each layer</a>
+      <a href="#name">The name</a>
+      <a href="#words">How words are labelled</a>
+      <a href="#open">Open the app</a>
+    </nav>
+
+    <section id="what">
+      <h2>What EIA is</h2>
+      <p>EIA is one agent. The WeCology apps do not each keep a separate intelligence. They refer to this one, and to the same doctrine.</p>
+      <p>It is an apprentice. It assumes it is wrong. A plan, including its own reading, is a hypothesis. When the land disagrees, the land is right.</p>
+      <p>It draws out what a person on the ground already sees. It does not arrive with an order for the farm. Data here is something offered, and the most restrictive consent wins. EIA leaves out a record a steward has opted out of.</p>
+      <p>hm-eia.net is the pilot: the app GeoDataTrack opens, and the passphrase chat. The public introduction is this page. The longer-term home, the knowledge base, and the place the account will be kept is ecoregion.net.</p>
+    </section>
+
+    <section id="who">
+      <h2>Who it is for</h2>
+      <ul class="who">
+        <li>Land stewards and managers, reading the monitoring on their own ground and deciding what to test next.</li>
+        <li>Verifiers and monitors. They still make the decision. EIA prepares questions. It does not take the decision.</li>
+        <li>People who know an ecoregion and contribute that knowledge, with their name on what they brought.</li>
+        <li>The other WeCology layers, which ask EIA when a question needs the same ecological reading.</li>
+      </ul>
+    </section>
+
+    <section id="does">
+      <h2>What it does</h2>
+      <p>EIA reads observed values. Surveys, sites, soil, rainfall, satellite context, the ecoregion, photos, and what someone wrote in the field. It reads them through the four ecosystem processes Holistic Management already uses. Four ways of looking at the same ground.</p>
+      <p>Where the record supports it, a reading offers an observation, a question, and a testable hypothesis. Each one carries a confidence — low, medium, or high — and a falsifier: what on this ground would show it to be wrong. If the record does not show something, EIA says it cannot see it.</p>
+      <p>The names Water Circles, Minerals Return, Sunlight Flows, and Community Weaves are reminders to ask. They are the same four processes. They are not labels to award.</p>
+      <ol class="processes">
+        <li>
+          <h3>Water cycle</h3>
+          <p>Where is water going on this ground, and what would show it staying or leaving?</p>
+        </li>
+        <li>
+          <h3>Mineral cycle</h3>
+          <p>Is organic matter accumulating or leaving, and what would you look at to tell?</p>
+        </li>
+        <li>
+          <h3>Energy flow</h3>
+          <p>What is capturing sunlight here, and what is not?</p>
+        </li>
+        <li>
+          <h3>Community dynamics</h3>
+          <p>What is the community doing, including people, and what would show a change in direction?</p>
+        </li>
+      </ol>
+      <figure>
+        <figcaption>Placeholder. No approved screenshot of EIA is in this repository. The panes repeat the questions above. They are not a photograph of the app, not example data, and not a reading of any farm.</figcaption>
+        <div class="panes" aria-hidden="true">
+          <div class="pane"><h3>Water</h3><p>A question about where water goes.</p></div>
+          <div class="pane"><h3>Mineral</h3><p>A question about organic matter.</p></div>
+          <div class="pane"><h3>Energy</h3><p>A question about sunlight.</p></div>
+          <div class="pane"><h3>Community</h3><p>A question about the living community, including people.</p></div>
+        </div>
+      </figure>
+    </section>
+
+    <section id="limits">
+      <h2>Limits</h2>
+      <ul class="limits">
+        <li>It never grades land and never produces scores. If a survey already records an EHI, EIA may quote that number as recorded, with the survey and the date. It does not compute one, and it does not adjust one.</li>
+        <li>Nothing interpretive is written back into GeoDataTrack. EIA reads. The record in GeoDataTrack stays the record a person entered.</li>
+        <li>The accredited verifier decides. The land is the court. EIA does not certify, rank, or stand in for that person.</li>
+        <li>A reading asks. It does not hand down a management order. What to do on the ground stays with the people who farm it and with the verifier.</li>
+      </ul>
+    </section>
+
+    <section id="layers">
+      <h2>How EIA serves each layer</h2>
+      <p>One agent, asked from several places. Each layer keeps its own job. Where a link is still a plan, this page says so.</p>
+      <div class="layers">
+        <article class="layer" id="geodatatrack">
+          <h3>GeoDataTrack</h3>
+          <p>GeoDataTrack collects observed values in the field. EIA opens inside it, from Manage Apps, on the property you are already in. It reads those values and writes nothing interpretive back. Sign in at <a href="https://app.geodatatrack.com">app.geodatatrack.com</a>, then open EIA from Manage Apps. A direct link that opens EIA itself has not been confirmed, so this page does not invent one.</p>
+        </article>
+        <article class="layer" id="ecoregion">
+          <h3>ecoregion.net</h3>
+          <p>ecoregion.net is the evidence and knowledge base EIA learns from: the place, the species lists, the catalogues, and the open questions, with a name and a date on every contribution. It is also the home WeCology chose for EIA on 23 October 2026. The move is not built yet. Until it is, the pilot stays here, and the growing account is at <a href="https://ecoregion.net/eia/">ecoregion.net/eia/</a>. An EIA draft of a catalogue stays a question until a person reviews it.</p>
+        </article>
+        <article class="layer" id="skabenga">
+          <h3>Skabenga</h3>
+          <p>Skabenga is the companion that stays with one steward. It asks before it tells. For ecological reading it defers to EIA, and it is meant to show the steward exactly what would be sent before it asks. That live connection is not built yet. Holistic context is shared with EIA only as its own opt-in. Skabenga does not replace the verifier, and it does not write an interpretation into GeoDataTrack.</p>
+        </article>
+        <article class="layer" id="ecoview">
+          <h3>EcoView</h3>
+          <p>EcoView reads one property through the same four processes, with EIA’s questions alongside. It shows that property’s own records. It is not a second agent, and it does not write back to GeoDataTrack. Asking EIA from EcoView still runs inside EcoView. Pointing that ask at the single EIA on ecoregion.net is a plan, not a change that has been made.</p>
+        </article>
+        <article class="layer" id="globalqa">
+          <h3>GlobalQA</h3>
+          <p>GlobalQA reviews the quality of EOV monitoring and returns findings and questions. It is not a verifier and not a certifier. The accredited person decides. EIA does not turn a finding into a grade, and it does not override or correct a field observation. As of 23 October 2026 that project describes itself as a pilot, and monitoring data does not yet flow between GeoDataTrack and GlobalQA.</p>
+        </article>
+        <article class="layer" id="hfp">
+          <h3>HFP, Holistic Financial Planning</h3>
+          <p>HFP is the money side of Holistic Management. EIA’s part there is to set ecological questions beside the financial plan, as context a person can accept or ignore. No score enters the plan. <a href="https://holistic-financial-planning.netlify.app">HFP’s own page</a> says this reading is not built yet (October 2026). The intention is questions beside the plan. Nothing from EIA is written into GeoDataTrack from that plan.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="name">
+      <h2>The name</h2>
+      <p>EIA is a nod to Theia, the Titan goddess of light, whose gift was illumination: seeing what is there. For this agent, that means seeing what the land is already doing. The name is EIA. The essay behind it is <a href="https://substack.com/home/post/p-198399388">The Window and What Lies Beyond It</a>, WeCology, 19 May 2026.</p>
+      <blockquote>
+        <p>To learn and understand the intelligence of planet Earth — the intelligence that produced complex living systems over billions of years — so that humanity can move from separation to participation, and help restore what has been lost.</p>
+      </blockquote>
+      <p class="cite">EIA Purpose Statement. WeCology. From that essay.</p>
+    </section>
+
+    <section id="words">
+      <h2>How EIA’s words are labelled</h2>
+      <p>Anything EIA writes is credited to EIA. It is labelled as a dated draft: EIA draft, generated on a given date, not yet reviewed. A person reviews it before it is treated as more than a question. It is not a finding, and it is not a description of the state of a place.</p>
+      <p>This page is an EIA draft – generated 23 Oct 2026, not yet reviewed.</p>
+    </section>
+
+    <section id="open" class="open-block">
+      <h2>Open the app</h2>
+      <p>EIA’s working app runs inside GeoDataTrack. Opened on its own, the root of this site is that app waiting for GeoDataTrack, so a public visit is brought here instead.</p>
+      <div class="actions">
+        <a class="btn btn-primary" href="https://app.geodatatrack.com">Open EIA in GeoDataTrack</a>
+        <a class="btn btn-secondary" href="/public/chat.html">Passphrase chat</a>
+      </div>
+      <p class="hint">GeoDataTrack: sign in at app.geodatatrack.com, then Manage Apps, then EIA. EIA reads the property GeoDataTrack hands it. It does not ask you to paste a token into this page.</p>
+      <p class="hint">Passphrase chat: the pilot’s other door, at the chat page on this site. The passphrase is checked on the server and is not stored in the page. Until the server is configured, the chat cannot start a session. It is not a public open chat.</p>
+      <p class="hint"><a href="https://ecoregion.net/eia/">ecoregion.net/eia/</a> is where the fuller account lives, and where EIA’s home is moving.</p>
+    </section>
+  </div>
+
+  <footer>
+    <div class="wrap">
+      <p>WeCology. Part of the GeoDataTrack work. Pilot, October 2026.</p>
+      <p>Placeholder mark and placeholder panes. Not a product logo, and not a reading of any farm.</p>
+      <p>This page is static. It sets no cookie, and it does not load anything from another server.</p>
+      <p>This page is an EIA draft – generated 23 Oct 2026, not yet reviewed.</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "node scripts/phase0-checks.mjs && node scripts/shadow-checks.mjs && node scripts/doctrine-checks.mjs"
+    "test": "node scripts/phase0-checks.mjs && node scripts/shadow-checks.mjs && node scripts/doctrine-checks.mjs && node scripts/homepage-checks.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.4",
