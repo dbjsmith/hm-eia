@@ -8,8 +8,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import eovReport from "../netlify/functions/eia-eov-report.js";
+import eovReport, { setEovControlsForTests } from "../netlify/functions/eia-eov-report.js";
 import { decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
+import { fixtureBindingVerifier } from "../netlify/functions/_shared/eov-verifier.js";
+import { blobsGetSetLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
+import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 
 process.env.EIA_AUTH_SECRET = "eov-test-auth-secret-0123456789";
 process.env.EIA_APP_SECRET = "eov-test-app-secret-0123456789";
@@ -57,11 +60,11 @@ function token(exp, secret = process.env.EIA_AUTH_SECRET) {
 
 let requestSeq = 0;
 
-function request(body, { bearer = process.env.EIA_APP_SECRET, raw } = {}) {
+function request(body, { bearer = process.env.EIA_APP_SECRET, raw, ip } = {}) {
   requestSeq += 1;
   const headers = {
     "Content-Type": "application/json",
-    "x-nf-client-connection-ip": `203.0.113.${requestSeq}`,
+    "x-nf-client-connection-ip": ip || `203.0.113.${requestSeq}`,
   };
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   return new Request("https://hm-eia.test/api/eia-eov-report", {
@@ -121,15 +124,23 @@ function trustedScope(overrides = {}) {
 }
 
 await check("source does not call a provider or shadow", () => {
-  const gate = readFileSync(new URL("../netlify/functions/_shared/eov-report.js", import.meta.url), "utf8");
-  const handler = readFileSync(new URL("../netlify/functions/eia-eov-report.js", import.meta.url), "utf8");
-  for (const source of [gate, handler]) {
+  const files = [
+    "../netlify/functions/_shared/eov-report.js",
+    "../netlify/functions/_shared/eov-ledger.js",
+    "../netlify/functions/_shared/eov-verifier.js",
+    "../netlify/functions/_shared/eov-policy.js",
+    "../netlify/functions/eia-eov-report.js",
+  ];
+  for (const file of files) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.equal(source.includes("callAnthropic"), false);
     assert.equal(source.includes("startShadow"), false);
     assert.equal(source.includes("api.anthropic.com"), false);
     assert.equal(source.includes("chat/completions"), false);
     assert.equal(source.includes("takeDailyAllowance"), false);
     assert.equal(source.includes("fetch("), false);
+    assert.equal(source.includes("claude-sonnet"), false);
+    assert.equal(source.includes("0.044"), false);
   }
 });
 
@@ -205,7 +216,7 @@ await check("http handler keeps trust and budget closed even when consent is con
   const res = await eovReport(request(consentedBody()));
   const payload = await res.json();
   assert.equal(res.status, 403);
-  assert.equal(payload.reason, "trust_unavailable");
+  assert.equal(payload.reason, "binding_required");
   assert.equal(payload.inference, "not_called");
   assert.equal(payload.provider_calls, 0);
   zeroCalls();
@@ -280,9 +291,260 @@ await check("a reserved fixture still makes no provider call and does not consum
 await check("shadow flags in the environment do not create a second call", async () => {
   assert.equal(process.env.SHADOW_ENABLED, "true");
   const withheld = await eovReport(request(baseBody()));
-  const blocked = await eovReport(request(consentedBody()));
+  const blockedRes = await eovReport(request(consentedBody()));
+  const blocked = await blockedRes.json();
   assert.equal((await withheld.json()).shadow_calls, 0);
-  assert.equal((await blocked.json()).shadow_calls, 0);
+  assert.equal(blocked.shadow, "forced_off");
+  assert.equal(blocked.shadow_calls, 0);
+  zeroCalls();
+});
+
+await check("an unsigned client token is not an issuer", async () => {
+  const res = await eovReport(request({ ...consentedBody(), binding_token: "client-forged-token" }));
+  const payload = await res.json();
+  assert.equal(payload.reason, "issuer_unavailable");
+  assert.equal(payload.provider_calls, 0);
+  zeroCalls();
+});
+
+await check("empty policy selects no model and no amount", () => {
+  const policy = readEovPolicy({});
+  assert.equal(policy.configured, false);
+  assert.equal(policy.approved, false);
+  assert.equal(policy.model, null);
+  assert.equal(policy.ceilingMinor, null);
+  assert.equal(policy.maxInputTokens, null);
+  assert.equal(policy.maxOutputTokens, null);
+});
+
+await check("explicit env policy still cannot open the provider without an issuer", async () => {
+  const names = {
+    EIA_EOV_BUDGET_APPROVED: "true",
+    EIA_EOV_MODEL: "fixture-model-not-a-runtime-selection",
+    EIA_EOV_BUDGET_CURRENCY: "USD",
+    EIA_EOV_BUDGET_MINOR: "20",
+    EIA_EOV_MAX_CALL_MINOR: "5",
+    EIA_EOV_MAX_INPUT_TOKENS: "12000",
+    EIA_EOV_MAX_OUTPUT_TOKENS: "2000",
+  };
+  const saved = {};
+  for (const [key, value] of Object.entries(names)) {
+    saved[key] = process.env[key];
+    process.env[key] = value;
+  }
+  try {
+    const policy = readEovPolicy();
+    assert.equal(policy.configured, true);
+    assert.equal(policy.model, "fixture-model-not-a-runtime-selection");
+    const res = await eovReport(request({ ...consentedBody(), binding_token: "still-untrusted" }));
+    const payload = await res.json();
+    assert.equal(payload.reason, "issuer_unavailable");
+    assert.equal(payload.provider_calls, 0);
+    zeroCalls();
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+const researchFixturePolicy = {
+  approved: true,
+  model: "fixture-model-not-a-runtime-selection",
+  currency: "USD",
+  ceilingMinor: 20,
+  maxCallMinor: 5,
+  maxInputTokens: 12000,
+  maxOutputTokens: 2000,
+};
+
+function fixtureClaims(overrides = {}) {
+  return {
+    property_ref: "opaque-property-ref",
+    report_id: "synthetic-report-1",
+    sha256: digest,
+    expires_at: future,
+    audience: "eia-eov-report",
+    caller_kind: "app",
+    primary_consent: true,
+    confirmation_id: "confirm-001",
+    ...overrides,
+  };
+}
+
+function readyBody(overrides = {}) {
+  return {
+    ...consentedBody(),
+    binding_token: "fixture-token-1",
+    declared_usage: { input_tokens: 100, output_tokens: 50 },
+    ...overrides,
+  };
+}
+
+async function withFixture(claims, fn, policy = researchFixturePolicy) {
+  const ledger = memoryLedger();
+  setEovControlsForTests({
+    verifier: fixtureBindingVerifier(new Map([["fixture-token-1", claims]])),
+    ledger,
+    policy,
+  });
+  try {
+    return await fn(ledger);
+  } finally {
+    setEovControlsForTests(null);
+  }
+}
+
+await check("ai_consent false does not consult the fixture issuer", async () => {
+  let seen = 0;
+  setEovControlsForTests({
+    verifier: { kind: "test-fixture", async verify() { seen += 1; return { ok: false, reason: "binding_rejected" }; } },
+    ledger: memoryLedger(),
+    policy: researchFixturePolicy,
+  });
+  try {
+    const res = await eovReport(request(baseBody()));
+    assert.equal((await res.json()).reason, "ai_consent_false");
+    assert.equal(seen, 0);
+    zeroCalls();
+  } finally {
+    setEovControlsForTests(null);
+  }
+});
+
+await check("fixture mismatches for property, report, digest, expiry, audience, and auth make no call", async () => {
+  const cases = [
+    ["scope_mismatch_property", { property_ref: "other-property" }],
+    ["scope_mismatch_report", { report_id: "other-report" }],
+    ["scope_mismatch_digest", { sha256: otherDigest }],
+    ["scope_expired", { expires_at: past }],
+    ["audience_mismatch", { audience: "some-other-app" }],
+    ["auth_mismatch", { caller_kind: "gdt" }],
+    ["primary_consent_refused", { primary_consent: false }],
+    ["send_confirmation_unbound", { confirmation_id: "confirm-999" }],
+  ];
+  for (const [reason, overrides] of cases) {
+    await withFixture(fixtureClaims(overrides), async (ledger) => {
+      const res = await eovReport(request(readyBody()));
+      const payload = await res.json();
+      assert.equal(payload.reason, reason);
+      assert.equal(payload.verification, "fixture_not_issuer");
+      assert.equal(payload.provider_calls, 0);
+      assert.equal((await ledger.read()).spentMinor, 0);
+    });
+  }
+  zeroCalls();
+});
+
+await check("declared tokens over the fixture ceiling are rejected before a hold", async () => {
+  await withFixture(fixtureClaims(), async (ledger) => {
+    const res = await eovReport(request(readyBody({
+      declared_usage: { input_tokens: 12001, output_tokens: 50 },
+    })));
+    const payload = await res.json();
+    assert.equal(payload.reason, "token_limit_rejected");
+    assert.equal(payload.token_accounting, "not_tokenised");
+    assert.equal((await ledger.read()).spentMinor, 0);
+  });
+  zeroCalls();
+});
+
+await check("a fully valid synthetic fixture still makes no provider call and rolls the hold back", async () => {
+  await withFixture(fixtureClaims(), async (ledger) => {
+    const first = await eovReport(request(readyBody()));
+    const payload = await first.json();
+    assert.equal(payload.reason, "provider_path_closed");
+    assert.equal(payload.reservation, "rolled_back");
+    assert.equal(payload.provider_calls, 0);
+    assert.equal(payload.shadow_calls, 0);
+    assert.equal(payload.shadow, "forced_off");
+    assert.equal((await ledger.read()).spentMinor, 0);
+    const second = await eovReport(request(readyBody()));
+    assert.equal((await second.json()).reason, "provider_path_closed");
+    assert.equal((await ledger.read()).spentMinor, 0);
+  });
+  zeroCalls();
+});
+
+await check("the in-memory ledger caps concurrent reservations and is not distributed", async () => {
+  const ledger = memoryLedger();
+  assert.equal(ledger.distributed, false);
+  assert.equal(ledger.safety, "single_process_queue");
+  const results = await Promise.all(Array.from({ length: 20 }, (_, index) => reserveEovSpend(ledger, {
+    minor: 10,
+    ceilingMinor: 100,
+    confirmationId: `confirm-${index}`,
+    idempotencyKey: `idem-${index}`,
+    inputTokens: 10,
+    outputTokens: 10,
+    maxInputTokens: 100,
+    maxOutputTokens: 100,
+  })));
+  assert.equal(results.filter((item) => item.reason === "reserved").length, 10);
+  assert.equal(results.filter((item) => item.reason === "budget_exhausted").length, 10);
+  assert.equal((await ledger.read()).spentMinor, 100);
+});
+
+await check("identical retries are idempotent and a second confirmation key is replay", async () => {
+  const ledger = memoryLedger();
+  const charge = {
+    minor: 10,
+    ceilingMinor: 100,
+    confirmationId: "confirm-same",
+    idempotencyKey: "idem-same",
+    inputTokens: 10,
+    outputTokens: 10,
+    maxInputTokens: 100,
+    maxOutputTokens: 100,
+  };
+  const results = await Promise.all(Array.from({ length: 12 }, () => reserveEovSpend(ledger, charge)));
+  assert.equal(results.filter((item) => item.reason === "reserved").length, 1);
+  assert.equal(results.filter((item) => item.reason === "idempotent").length, 11);
+  assert.equal((await ledger.read()).spentMinor, 10);
+  const conflict = await reserveEovSpend(ledger, { ...charge, minor: 9 });
+  assert.equal(conflict.reason, "idempotency_conflict");
+  const replay = await reserveEovSpend(ledger, { ...charge, idempotencyKey: "idem-other" });
+  assert.equal(replay.reason, "replay_rejected");
+  assert.equal((await ledger.read()).spentMinor, 10);
+  const released = await releaseUninvokedHold(ledger, charge);
+  assert.equal(released.reason, "released");
+  assert.equal((await ledger.read()).spentMinor, 0);
+});
+
+await check("an unsynchronised get/set loses updates and Blobs is not asked to set", async () => {
+  const unsafe = unsafeLostUpdateLedger();
+  await Promise.all(Array.from({ length: 30 }, () => unsafe.add(10)));
+  assert.equal(unsafe.spent(), 10);
+  let writes = 0;
+  const store = {
+    set() { writes += 1; },
+    setJSON() { writes += 1; },
+  };
+  const refused = await reserveEovSpend(blobsGetSetLedger(store), {
+    minor: 5,
+    ceilingMinor: 20,
+    confirmationId: "confirm-blobs",
+    idempotencyKey: "idem-blobs",
+    inputTokens: 10,
+    outputTokens: 10,
+    maxInputTokens: 100,
+    maxOutputTokens: 100,
+  });
+  assert.equal(refused.reason, "reservation_store_unavailable");
+  assert.equal(writes, 0);
+  zeroCalls();
+});
+
+await check("the same address is rate limited before a provider call", async () => {
+  const ip = "198.51.100.77";
+  const reasons = [];
+  for (let i = 0; i < 9; i += 1) {
+    const res = await eovReport(request(baseBody(), { ip }));
+    reasons.push((await res.json()).reason);
+  }
+  assert.equal(reasons.filter((reason) => reason === "ai_consent_false").length, 8);
+  assert.equal(reasons[8], "rate_limited");
   zeroCalls();
 });
 

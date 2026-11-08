@@ -9,9 +9,15 @@
  * and not a cryptographic consent proof. `false` withholds inference.
  * `true` still needs a server-bound report/property/digest, a separate
  * per-send confirmation, a concurrency-safe monetary reservation, and an
- * approved token policy. None of those exist in this process, so the
- * provider path stays closed.
+ * approved token policy. The HTTP path uses an unavailable issuer and a
+ * non-atomic store, so it still cannot call a provider. Fixture verifiers
+ * and the single-process ledger are test doubles, not a GeoDataTrack signature
+ * and not distributed proof. Declared token numbers are not tokenised.
  */
+
+import { EOV_AUDIENCE } from "./eov-verifier.js";
+import { policyGap } from "./eov-policy.js";
+import { releaseUninvokedHold, reserveEovSpend } from "./eov-ledger.js";
 
 export const ADAPTER_VERSION = "eov-report-v0";
 
@@ -28,9 +34,11 @@ const FORBIDDEN_KEYS = new Set([
   "bound_scope",
   "trusted_scope",
   "budget",
+  "primary_consent",
+  "model",
 ]);
 
-function decision(httpStatus, status, reason) {
+function decision(httpStatus, status, reason, extra = {}) {
   return {
     httpStatus,
     payload: {
@@ -40,10 +48,13 @@ function decision(httpStatus, status, reason) {
       reason,
       provider_calls: 0,
       shadow_calls: 0,
+      shadow: "forced_off",
       inference: "not_called",
-      verification: "offline_gate",
+      verification: extra.verification || "offline_gate",
       draft: null,
       writes_to_gdt: false,
+      token_accounting: "not_tokenised",
+      reservation: extra.reservation || "not_attempted",
     },
   };
 }
@@ -154,4 +165,105 @@ export function decideEovReport({
   if (replayLedger.has(consent.confirmation_id)) return decision(409, "blocked", "replay_rejected");
 
   return decision(403, "blocked", "token_policy_unapproved");
+}
+
+function claimMismatch(body, claims, auth, now) {
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "binding_rejected";
+  if (claims.audience !== EOV_AUDIENCE) return "audience_mismatch";
+  if (!auth?.kind || claims.caller_kind !== auth.kind) return "auth_mismatch";
+  if (claims.property_ref !== body.property_ref) return "scope_mismatch_property";
+  if (claims.report_id !== body.report.report_id) return "scope_mismatch_report";
+  if (claims.sha256 !== body.report.sha256) return "scope_mismatch_digest";
+  const expires = parseInstant(claims.expires_at);
+  if (expires == null || expires <= now) return "scope_expired";
+  if (claims.primary_consent !== true) return "primary_consent_refused";
+  if (claims.confirmation_id !== body.consent.confirmation_id) return "send_confirmation_unbound";
+  return null;
+}
+
+function declaredUsage(body, policy) {
+  const usage = body.declared_usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return { reason: "token_undeclared" };
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  if (!Number.isInteger(inputTokens) || !Number.isInteger(outputTokens) || inputTokens < 1 || outputTokens < 1) {
+    return { reason: "token_undeclared" };
+  }
+  if (inputTokens > policy.maxInputTokens || outputTokens > policy.maxOutputTokens) return { reason: "token_limit_rejected" };
+  return { inputTokens, outputTokens };
+}
+
+function httpForLedger(reason) {
+  if (reason === "budget_exhausted") return 429;
+  if (reason === "replay_rejected" || reason === "idempotency_conflict") return 409;
+  if (reason === "token_limit_rejected" || reason === "token_undeclared" || reason === "invalid_body") return 400;
+  if (reason === "reservation_store_unavailable" || reason === "reservation_conflict" || reason === "reservation_release_failed") {
+    return 503;
+  }
+  return 403;
+}
+
+/**
+ * Server-side assessment. `verifier`, `ledger`, and `policy` are injected.
+ * The production handler injects an unavailable issuer, a non-atomic Blobs
+ * adapter, and whatever explicit env policy exists (none by default).
+ * A passing fixture still rolls the hold back and does not call a model.
+ */
+export async function assessEovReport({
+  body,
+  auth = null,
+  verifier = null,
+  ledger = null,
+  policy = null,
+  now = Date.now(),
+} = {}) {
+  const early = decideEovReport({ body, now });
+  if (early.payload.reason !== "trust_unavailable") return early;
+
+  const token = body?.binding_token;
+  if (typeof token !== "string" || token.length < 1 || token.length > 200) {
+    return decision(403, "blocked", "binding_required");
+  }
+  if (!verifier || typeof verifier.verify !== "function") {
+    return decision(403, "blocked", "issuer_unavailable");
+  }
+  const verified = await verifier.verify(token);
+  if (!verified?.ok) {
+    return decision(403, "blocked", verified?.reason || "issuer_unavailable", {
+      verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
+    });
+  }
+  const mismatch = claimMismatch(body, verified.claims, auth, now);
+  if (mismatch) {
+    return decision(403, "blocked", mismatch, {
+      verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
+    });
+  }
+
+  const gap = policyGap(policy);
+  if (gap) return decision(403, "blocked", gap, { verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate" });
+  const usage = declaredUsage(body, policy);
+  if (usage.reason) return decision(httpForLedger(usage.reason), "blocked", usage.reason);
+
+  const idempotencyKey = typeof body.idempotency_key === "string" && body.idempotency_key.length >= 8
+    ? body.idempotency_key
+    : body.consent.confirmation_id;
+  const charge = {
+    minor: policy.maxCallMinor,
+    ceilingMinor: policy.ceilingMinor,
+    confirmationId: body.consent.confirmation_id,
+    idempotencyKey,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    maxInputTokens: policy.maxInputTokens,
+    maxOutputTokens: policy.maxOutputTokens,
+  };
+  const reserved = await reserveEovSpend(ledger, charge);
+  if (!reserved.ok) return decision(httpForLedger(reserved.reason), "blocked", reserved.reason);
+  const released = await releaseUninvokedHold(ledger, charge);
+  if (!released.ok) return decision(503, "blocked", "reservation_release_failed", { reservation: "held_uninvoked" });
+  return decision(403, "blocked", "provider_path_closed", {
+    verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
+    reservation: "rolled_back",
+  });
 }

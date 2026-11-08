@@ -1,39 +1,60 @@
 import { preflight, jsonResponse } from "./_shared/cors.js";
 import { authoriseRequest } from "./_shared/eia-auth.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
-import { decideEovReport } from "./_shared/eov-report.js";
+import { assessEovReport } from "./_shared/eov-report.js";
+import { unavailableBindingVerifier } from "./_shared/eov-verifier.js";
+import { blobsGetSetLedger } from "./_shared/eov-ledger.js";
+import { readEovPolicy } from "./_shared/eov-policy.js";
 
 /**
  * Metadata gate for a future EOV report reading.
  *
- * The report PDF stays in the report app. This function accepts a small
- * JSON description only. It reuses EIA session/app-secret authentication
- * and the in-memory per-IP limiter. It does not reserve spend, does not
- * read a monetary budget, does not call Anthropic, and does not start a
- * shadow model. Server report/property/digest trust is not available, so
- * decideEovReport is called with a null binding.
+ * The PDF stays in the report app. This function does not call a model or
+ * a shadow provider. Production controls are an unavailable binding issuer,
+ * a Blobs adapter that refuses non-atomic reservation, and an explicit
+ * policy with no default model or amount. Tests may inject fixtures.
  */
 
 const WINDOW_MS = 10 * 60 * 1000;
 const WINDOW_LIMIT = 8;
 const MAX_BODY_BYTES = 8 * 1024;
 
+let testControls;
+
+export function setEovControlsForTests(controls) {
+  testControls = controls || null;
+}
+
+function activeControls() {
+  if (testControls) return testControls;
+  return {
+    verifier: unavailableBindingVerifier(),
+    ledger: blobsGetSetLedger(null),
+    policy: readEovPolicy(),
+  };
+}
+
+function gate(req, status, reason, headers) {
+  return jsonResponse(req, {
+    adapter_version: "eov-report-v0",
+    ok: false,
+    status: "blocked",
+    reason,
+    provider_calls: 0,
+    shadow_calls: 0,
+    shadow: "forced_off",
+    inference: "not_called",
+    verification: "offline_gate",
+    draft: null,
+    writes_to_gdt: false,
+    token_accounting: "not_tokenised",
+    reservation: "not_attempted",
+  }, status, headers);
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") return preflight(req);
-  if (req.method !== "POST") {
-    return jsonResponse(req, {
-      adapter_version: "eov-report-v0",
-      ok: false,
-      status: "blocked",
-      reason: "method_not_allowed",
-      provider_calls: 0,
-      shadow_calls: 0,
-      inference: "not_called",
-      verification: "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-    }, 405);
-  }
+  if (req.method !== "POST") return gate(req, 405, "method_not_allowed");
 
   const auth = authoriseRequest(req);
   if (!auth.ok) {
@@ -44,75 +65,29 @@ export default async (req) => {
         : auth.error === "Missing credentials"
           ? "missing_credentials"
           : "unauthorised";
-    return jsonResponse(req, {
-      adapter_version: "eov-report-v0",
-      ok: false,
-      status: "blocked",
-      reason,
-      provider_calls: 0,
-      shadow_calls: 0,
-      inference: "not_called",
-      verification: "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-    }, auth.status);
+    return gate(req, auth.status, reason);
   }
 
   const limit = takeToken("eov-report", clientIp(req), WINDOW_LIMIT, WINDOW_MS);
-  if (!limit.ok) {
-    return jsonResponse(req, {
-      adapter_version: "eov-report-v0",
-      ok: false,
-      status: "blocked",
-      reason: "rate_limited",
-      provider_calls: 0,
-      shadow_calls: 0,
-      inference: "not_called",
-      verification: "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-    }, 429, { "Retry-After": String(limit.retryAfter) });
-  }
+  if (!limit.ok) return gate(req, 429, "rate_limited", { "Retry-After": String(limit.retryAfter) });
 
   const raw = await req.text();
-  if (raw.length > MAX_BODY_BYTES) {
-    return jsonResponse(req, {
-      adapter_version: "eov-report-v0",
-      ok: false,
-      status: "blocked",
-      reason: "body_too_large",
-      provider_calls: 0,
-      shadow_calls: 0,
-      inference: "not_called",
-      verification: "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-    }, 413);
-  }
+  if (raw.length > MAX_BODY_BYTES) return gate(req, 413, "body_too_large");
 
   let body;
   try {
     body = raw ? JSON.parse(raw) : null;
   } catch {
-    return jsonResponse(req, {
-      adapter_version: "eov-report-v0",
-      ok: false,
-      status: "blocked",
-      reason: "invalid_json",
-      provider_calls: 0,
-      shadow_calls: 0,
-      inference: "not_called",
-      verification: "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-    }, 400);
+    return gate(req, 400, "invalid_json");
   }
 
-  const decision = decideEovReport({
+  const controls = activeControls();
+  const decision = await assessEovReport({
     body,
-    boundScope: null,
-    budget: { status: "unknown" },
-    replayLedger: null,
+    auth: { kind: auth.kind },
+    verifier: controls.verifier,
+    ledger: controls.ledger,
+    policy: controls.policy,
   });
   console.log("[eia-eov-report]", { status: decision.payload.status, reason: decision.payload.reason });
   return jsonResponse(req, decision.payload, decision.httpStatus);
