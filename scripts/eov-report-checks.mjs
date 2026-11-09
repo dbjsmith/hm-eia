@@ -6,11 +6,11 @@
  */
 
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import eovReport, { setEovControlsForTests } from "../netlify/functions/eia-eov-report.js";
-import { decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
-import { fixtureBindingVerifier } from "../netlify/functions/_shared/eov-verifier.js";
+import { assessEovReport, decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
+import { canonicalAssertion, fixtureBindingVerifier, packAssertion, reportBindingVerifier, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
 import { blobsGetSetLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
@@ -143,6 +143,8 @@ await check("source does not call a provider or shadow", () => {
     assert.equal(source.includes("fetch("), false);
     assert.equal(source.includes("claude-sonnet"), false);
     assert.equal(source.includes("0.044"), false);
+    assert.equal(source.includes("BEGIN PRIVATE KEY"), false);
+    assert.equal(source.includes("BEGIN PUBLIC KEY"), false);
   }
   for (const file of [
     "../netlify/functions/_shared/eov-tokens.js",
@@ -664,6 +666,192 @@ await check("the dollar ceiling rejects a charge the call cap would still allow"
   assert.equal(result.reason, "budget_exhausted");
   assert.equal(store.account().spentMicroUsd, 180_000);
   assert.equal(store.account().calls, 0);
+  zeroCalls();
+});
+
+const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+const throwawayPublicPem = publicKey.export({ type: "spki", format: "pem" });
+const assertionNow = Date.parse("2026-11-09T18:46:00Z");
+const assertionBytes = Buffer.from("synthetic-eov-report-bytes");
+
+function onlyNewStore() {
+  const seen = new Set();
+  return {
+    async setJSON(key, _value, options) {
+      if (options?.onlyIfNew !== true) throw new Error("onlyIfNew required");
+      if (seen.has(key)) return { modified: false };
+      seen.add(key);
+      return { modified: true, etag: "etag-1" };
+    },
+  };
+}
+
+function assertionPayload(overrides = {}, bytes = assertionBytes) {
+  const nowSec = Math.floor(assertionNow / 1000);
+  return {
+    iss: ASSERTION_ISS,
+    aud: EOV_AUDIENCE,
+    install_id: "install-test-1",
+    org_id: "org-test-1",
+    property_id: "property-test-1",
+    report_id: "synthetic-report-1",
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    ai_consent: true,
+    consent_id: "consent-test-1",
+    consent_changed_at: "2026-11-09T18:00:00Z",
+    request_id: "request-test-1",
+    iat: nowSec,
+    exp: nowSec + 300,
+    kid: "test-kid-1",
+    ...overrides,
+  };
+}
+
+function edAssertion(payload = assertionPayload()) {
+  const canonical = canonicalAssertion(payload);
+  const sig = sign(null, Buffer.from(canonical, "utf8"), privateKey);
+  return packAssertion("ed25519", payload, sig);
+}
+
+function hmacAssertion(payload, secret) {
+  const canonical = canonicalAssertion(payload);
+  const sig = createHmac("sha256", secret).update(canonical).digest();
+  return packAssertion("hmac-sha256", payload, sig);
+}
+
+await check("a signed assertion is refused when no public key is configured", async () => {
+  const closed = reportBindingVerifier({});
+  const result = await closed.verify(edAssertion(), {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  });
+  assert.equal(result.reason, "issuer_unavailable");
+  assert.equal(closed.kind, "issuer_unavailable");
+  zeroCalls();
+});
+
+await check("ed25519 verifies the report bytes and onlyIfNew rejects a replay", async () => {
+  const verifier = reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    audience: EOV_AUDIENCE,
+    allowHmac: false,
+  });
+  const store = onlyNewStore();
+  const context = { reportBytes: assertionBytes, replayStore: store, now: assertionNow };
+  const ok = await verifier.verify(edAssertion(), context);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.claims.iss, "geodatatrack-dev");
+  assert.equal(ok.claims.ai_consent, true);
+  assert.equal(ok.claims.primary_consent, true);
+  const replay = await verifier.verify(edAssertion(), context);
+  assert.equal(replay.reason, "replay_rejected");
+  const mismatched = await verifier.verify(edAssertion(), {
+    reportBytes: Buffer.from("synthetic-eov-report-bytes!"),
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  });
+  assert.equal(mismatched.reason, "sha256_mismatch");
+  const parts = edAssertion().split(".");
+  const flipped = parts[2].slice(0, 8) + (parts[2][8] === "A" ? "B" : "A") + parts[2].slice(9);
+  const badSig = await verifier.verify(`${parts[0]}.${parts[1]}.${flipped}`, {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  });
+  assert.equal(badSig.reason, "binding_rejected");
+  zeroCalls();
+});
+
+await check("assertion iss, aud, lifetime, consent, and clock skew are enforced", async () => {
+  const verifier = reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    audience: EOV_AUDIENCE,
+  });
+  const base = { reportBytes: assertionBytes, replayStore: onlyNewStore(), now: assertionNow };
+  const payload = assertionPayload();
+  assert.equal((await verifier.verify(edAssertion({ ...payload, iss: "other-issuer", request_id: "request-iss" }), base)).reason, "issuer_mismatch");
+  assert.equal((await verifier.verify(edAssertion({ ...payload, aud: "other-app", request_id: "request-aud" }), base)).reason, "audience_mismatch");
+  assert.equal((await verifier.verify(edAssertion({ ...payload, exp: payload.iat + 301, request_id: "request-window" }), base)).reason, "assertion_window");
+  assert.equal((await verifier.verify(edAssertion({ ...payload, ai_consent: false, request_id: "request-consent" }), base)).reason, "ai_consent_required");
+  const early = await verifier.verify(edAssertion({ ...payload, request_id: "request-early" }), {
+    ...base,
+    now: payload.iat * 1000 - 31_000,
+  });
+  assert.equal(early.reason, "assertion_not_yet_valid");
+  const late = await verifier.verify(edAssertion({ ...payload, request_id: "request-late" }), {
+    ...base,
+    now: (payload.iat + 300) * 1000 + 31_000,
+  });
+  assert.equal(late.reason, "assertion_expired");
+  const skewed = await verifier.verify(edAssertion({ ...payload, request_id: "request-skew" }), {
+    ...base,
+    replayStore: onlyNewStore(),
+    now: (payload.iat + 300) * 1000 + 20_000,
+  });
+  assert.equal(skewed.ok, true);
+  zeroCalls();
+});
+
+await check("hmac is ignored unless the config flag is set", async () => {
+  const secret = "throwaway-hmac-secret";
+  const payload = assertionPayload({ request_id: "request-hmac" });
+  const token = hmacAssertion(payload, secret);
+  const blocked = reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    allowHmac: false,
+    hmacSecret: secret,
+  });
+  assert.equal((await blocked.verify(token, {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  })).reason, "hmac_disabled");
+  const allowed = reportBindingVerifier({
+    keys: {},
+    allowHmac: true,
+    hmacSecret: secret,
+    audience: EOV_AUDIENCE,
+  });
+  const ok = await allowed.verify(token, {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.claims.request_id, "request-hmac");
+  zeroCalls();
+});
+
+await check("a valid ed25519 assertion still makes no provider call", async () => {
+  const payload = assertionPayload({ request_id: "request-assess", consent_id: "confirm-001" });
+  const token = edAssertion(payload);
+  const body = readyBody({
+    binding_token: token,
+    report: {
+      report_id: "synthetic-report-1",
+      sha256: payload.sha256,
+      byte_length: assertionBytes.length,
+      generated_at: "2026-11-08T12:00:00Z",
+    },
+  });
+  const verifier = reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    audience: EOV_AUDIENCE,
+  });
+  const assessed = await assessEovReport({
+    body,
+    auth: { kind: "app" },
+    verifier,
+    ledger: memoryLedger(),
+    policy: null,
+    now: assertionNow,
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+  });
+  assert.equal(assessed.payload.reason, "budget_unapproved");
+  assert.equal(assessed.payload.provider_calls, 0);
+  assert.equal(assessed.payload.shadow, "forced_off");
   zeroCalls();
 });
 

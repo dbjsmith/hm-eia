@@ -2,7 +2,7 @@ import { preflight, jsonResponse } from "./_shared/cors.js";
 import { authoriseRequest } from "./_shared/eia-auth.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
 import { assessEovReport } from "./_shared/eov-report.js";
-import { unavailableBindingVerifier } from "./_shared/eov-verifier.js";
+import { readBindingConfig, reportBindingVerifier } from "./_shared/eov-verifier.js";
 import { blobsGetSetLedger } from "./_shared/eov-ledger.js";
 import { readEovPolicy } from "./_shared/eov-policy.js";
 
@@ -29,7 +29,7 @@ export function setEovControlsForTests(controls) {
 function activeControls() {
   if (testControls) return testControls;
   return {
-    verifier: unavailableBindingVerifier(),
+    verifier: reportBindingVerifier(readBindingConfig()),
     ledger: blobsGetSetLedger(null),
     policy: readEovPolicy(),
   };

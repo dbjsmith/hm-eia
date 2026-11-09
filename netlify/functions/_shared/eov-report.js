@@ -169,6 +169,15 @@ export function decideEovReport({
 
 function claimMismatch(body, claims, auth, now) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "binding_rejected";
+  if (claims.assertion === true) {
+    if (claims.audience !== EOV_AUDIENCE) return "audience_mismatch";
+    if (claims.report_id !== body.report.report_id) return "scope_mismatch_report";
+    if (claims.sha256 !== body.report.sha256) return "scope_mismatch_digest";
+    if (!Number.isInteger(claims.exp) || claims.exp * 1000 <= now) return "scope_expired";
+    if (claims.primary_consent !== true) return "primary_consent_refused";
+    if (claims.confirmation_id !== body.consent.confirmation_id) return "send_confirmation_unbound";
+    return null;
+  }
   if (claims.audience !== EOV_AUDIENCE) return "audience_mismatch";
   if (!auth?.kind || claims.caller_kind !== auth.kind) return "auth_mismatch";
   if (claims.property_ref !== body.property_ref) return "scope_mismatch_property";
@@ -216,20 +225,23 @@ export async function assessEovReport({
   ledger = null,
   policy = null,
   now = Date.now(),
+  reportBytes = null,
+  replayStore = null,
 } = {}) {
   const early = decideEovReport({ body, now });
   if (early.payload.reason !== "trust_unavailable") return early;
 
   const token = body?.binding_token;
-  if (typeof token !== "string" || token.length < 1 || token.length > 200) {
+  if (typeof token !== "string" || token.length < 1 || token.length > 4096) {
     return decision(403, "blocked", "binding_required");
   }
   if (!verifier || typeof verifier.verify !== "function") {
     return decision(403, "blocked", "issuer_unavailable");
   }
-  const verified = await verifier.verify(token);
+  const verified = await verifier.verify(token, { reportBytes, replayStore, now });
   if (!verified?.ok) {
-    return decision(403, "blocked", verified?.reason || "issuer_unavailable", {
+    const status = verified?.reason === "replay_rejected" ? 409 : 403;
+    return decision(status, "blocked", verified?.reason || "issuer_unavailable", {
       verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
     });
   }
