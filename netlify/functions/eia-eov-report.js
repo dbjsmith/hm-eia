@@ -5,6 +5,7 @@ import { assessEovReport } from "./_shared/eov-report.js";
 import { readBindingConfig, reportBindingVerifier } from "./_shared/eov-verifier.js";
 import { blobsGetSetLedger, openEovBlobsLedger } from "./_shared/eov-ledger.js";
 import { readEovPolicy } from "./_shared/eov-policy.js";
+export { EOV_REPORT_SYSTEM, EOV_PROMPT_VERSION } from "./_shared/eov-prompt.js";
 
 /**
  * Metadata gate for a future EOV report reading.
@@ -14,7 +15,9 @@ import { readEovPolicy } from "./_shared/eov-policy.js";
  * reservation -> provider. With no configured binding issuer, assessment
  * returns issuer_unavailable and never opens the provider path. The live
  * Netlify Blobs store (eia-spend) backs the CAS ledger and request_id
- * replay when assessment reaches those steps. Tests may inject fixtures.
+ * replay when assessment reaches those steps. The reading system prompt
+ * lives in _shared/eov-prompt.js (re-exported here) for a future provider
+ * path and for the offline synthetic harness. Tests may inject fixtures.
  */
 
 const WINDOW_MS = 10 * 60 * 1000;

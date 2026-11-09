@@ -15,6 +15,7 @@ import { blobsGetSetLedger, casBlobsLedger, memoryLedger, releaseUninvokedHold, 
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
 import { admitDeclaredTokens, worstCaseMicroUsd } from "../netlify/functions/_shared/eov-tokens.js";
+import { assertEovPromptShape, EOV_PROMPT_VERSION, EOV_REPORT_SYSTEM } from "../netlify/functions/_shared/eov-prompt.js";
 
 process.env.EIA_AUTH_SECRET = "eov-test-auth-secret-0123456789";
 process.env.EIA_APP_SECRET = "eov-test-app-secret-0123456789";
@@ -919,4 +920,14 @@ await check("the same address is rate limited before a provider call", async () 
 });
 
 globalThis.fetch = previousFetch;
+await check("EOV report system prompt keeps seeker stance and the Nov 2026 guidance", () => {
+  assertEovPromptShape(EOV_REPORT_SYSTEM);
+  assert.match(EOV_PROMPT_VERSION, /^eov-report-system-v0\.2/);
+  assert.match(EOV_REPORT_SYSTEM, /Avoid evaluative or judgement adjectives/);
+  assert.match(EOV_REPORT_SYSTEM, /verifier checklist/);
+  assert.match(EOV_REPORT_SYSTEM, /under 900 words/);
+  assert.equal(/under 600 words/.test(EOV_REPORT_SYSTEM), false);
+  zeroCalls();
+});
+
 console.log(`\n${passed} eov report checks passed`);
