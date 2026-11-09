@@ -2,9 +2,13 @@
  * Monetary reservation and replay for one EOV test account.
  *
  * The memory ledger serialises updates on one event loop. That is fixture
- * safety only. It is not distributed safety and it is not a Netlify Blobs
- * guarantee. Blobs documents get, set, and an etag on read. set does not
- * take that etag as a condition, so the Blobs adapter refuses to reserve.
+ * safety only. It is not distributed safety.
+ *
+ * @netlify/blobs 11.1.4 does accept onlyIfMatch and onlyIfNew. Those
+ * conditional writes are a different mechanism from an unconditional set,
+ * which remains last-write-wins. This fail-closed adapter does not open a
+ * live store. The conditional implementation lives in eov-blobs-ledger.js
+ * and is unverified against deployed Blobs until a TEST deploy.
  */
 
 export const EOV_ACCOUNT = "eov-report-v0";
@@ -59,7 +63,7 @@ export function blobsGetSetLedger(store) {
     distributed: false,
     platform: "netlify-blobs",
     safety: "none",
-    limitation: "Netlify Blobs get/set is not a compare-and-swap. A read etag is not accepted by set as a condition.",
+    limitation: "Live Blobs is not opened here. Conditional onlyIfMatch writes are implemented separately and are unverified until a TEST deploy.",
     async mutate() {
       void store;
       return { ok: false, reason: "reservation_store_unavailable", spentMinor: 0 };

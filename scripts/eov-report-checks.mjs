@@ -13,6 +13,8 @@ import { decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/e
 import { fixtureBindingVerifier } from "../netlify/functions/_shared/eov-verifier.js";
 import { blobsGetSetLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
+import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
+import { admitDeclaredTokens, worstCaseMicroUsd } from "../netlify/functions/_shared/eov-tokens.js";
 
 process.env.EIA_AUTH_SECRET = "eov-test-auth-secret-0123456789";
 process.env.EIA_APP_SECRET = "eov-test-app-secret-0123456789";
@@ -140,6 +142,16 @@ await check("source does not call a provider or shadow", () => {
     assert.equal(source.includes("takeDailyAllowance"), false);
     assert.equal(source.includes("fetch("), false);
     assert.equal(source.includes("claude-sonnet"), false);
+    assert.equal(source.includes("0.044"), false);
+  }
+  for (const file of [
+    "../netlify/functions/_shared/eov-tokens.js",
+    "../netlify/functions/_shared/eov-blobs-ledger.js",
+  ]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.equal(source.includes("fetch("), false);
+    assert.equal(source.includes("api.anthropic.com"), false);
+    assert.equal(source.includes("count_tokens"), false);
     assert.equal(source.includes("0.044"), false);
   }
 });
@@ -533,6 +545,125 @@ await check("an unsynchronised get/set loses updates and Blobs is not asked to s
   });
   assert.equal(refused.reason, "reservation_store_unavailable");
   assert.equal(writes, 0);
+  zeroCalls();
+});
+
+function fakeConditionalStore({ failMatches = 0, account = null } = {}) {
+  const rows = new Map();
+  let seq = 1;
+  let failLeft = failMatches;
+  const writes = [];
+  if (account) rows.set("eov-report-v0/account", { etag: "e0", value: account });
+  return {
+    writes,
+    async getWithMetadata(key, options) {
+      if (options?.consistency !== "strong" || options?.type !== "json") throw new Error("read was not strong json");
+      await Promise.resolve();
+      const row = rows.get(key);
+      if (!row) return null;
+      return { data: JSON.parse(JSON.stringify(row.value)), etag: row.etag };
+    },
+    async setJSON(key, value, options = {}) {
+      const conditional = options.onlyIfNew === true || typeof options.onlyIfMatch === "string";
+      if (!conditional) throw new Error("unconditional write");
+      writes.push({ key, onlyIfNew: options.onlyIfNew === true, onlyIfMatch: options.onlyIfMatch || null });
+      await Promise.resolve();
+      const row = rows.get(key);
+      if (options.onlyIfNew === true) {
+        if (row) return { modified: false };
+        const etag = `e${seq += 1}`;
+        rows.set(key, { etag, value: JSON.parse(JSON.stringify(value)) });
+        return { modified: true, etag };
+      }
+      if (failLeft > 0) {
+        failLeft -= 1;
+        return { modified: false };
+      }
+      if (!row || row.etag !== options.onlyIfMatch) return { modified: false };
+      const etag = `e${seq += 1}`;
+      rows.set(key, { etag, value: JSON.parse(JSON.stringify(value)) });
+      return { modified: true, etag };
+    },
+    account() {
+      const row = rows.get("eov-report-v0/account");
+      return row ? JSON.parse(JSON.stringify(row.value)) : null;
+    },
+  };
+}
+
+function blobCharge(index, overrides = {}) {
+  return {
+    confirmationId: `confirm-${index}-ok`,
+    idempotencyKey: `idem-${index}-ok`,
+    input_tokens: 100,
+    output_tokens: 50,
+    ...overrides,
+  };
+}
+
+await check("declared token ceilings are not inferred from byte length", () => {
+  assert.equal(worstCaseMicroUsd(), 44000);
+  assert.equal(admitDeclaredTokens({ input_tokens: 12000, output_tokens: 2000 }).ok, true);
+  assert.equal(admitDeclaredTokens({ input_tokens: 12001, output_tokens: 1 }).reason, "token_limit_rejected");
+  assert.equal(admitDeclaredTokens({ input_tokens: 1, output_tokens: 2001 }).reason, "token_limit_rejected");
+  const wide = { input_tokens: 100, output_tokens: 50, byte_length: 5_000_000 };
+  assert.equal(admitDeclaredTokens(wide).ok, true);
+  assert.equal(admitDeclaredTokens(wide).accounting, "declared_not_counted");
+  zeroCalls();
+});
+
+await check("conditional store reserves at most three calls and survives an etag conflict", async () => {
+  const store = fakeConditionalStore();
+  const results = await Promise.all([0, 1, 2, 3].map((index) => reserveOnConditionalStore(store, blobCharge(index))));
+  assert.equal(results.filter((item) => item.reason === "reserved").length, 3);
+  assert.equal(results.filter((item) => item.reason === "call_cap").length, 1);
+  assert.equal(store.account().calls, 3);
+  assert.equal(store.account().spentMicroUsd, 132000);
+  assert.equal(store.writes.every((write) => write.onlyIfNew || write.onlyIfMatch), true);
+
+  const conflicted = fakeConditionalStore({
+    failMatches: 1,
+    account: { spentMicroUsd: 0, calls: 0, holds: {} },
+  });
+  const retried = await reserveOnConditionalStore(conflicted, blobCharge(7));
+  assert.equal(retried.reason, "reserved");
+  assert.equal(conflicted.account().calls, 1);
+  assert.equal(conflicted.account().spentMicroUsd, 44000);
+
+  const stuck = fakeConditionalStore({
+    failMatches: 5,
+    account: { spentMicroUsd: 0, calls: 0, holds: {} },
+  });
+  const blocked = await reserveOnConditionalStore(stuck, blobCharge(8));
+  assert.equal(blocked.reason, "reservation_conflict");
+  assert.equal(stuck.account().calls, 0);
+  assert.equal(stuck.account().spentMicroUsd, 0);
+  zeroCalls();
+});
+
+await check("conditional retries are idempotent and a second confirmation is replay", async () => {
+  const store = fakeConditionalStore();
+  const charge = blobCharge(4);
+  const results = await Promise.all(Array.from({ length: 8 }, () => reserveOnConditionalStore(store, charge)));
+  assert.equal(results.every((item) => item.ok && (item.reason === "reserved" || item.reason === "idempotent")), true);
+  assert.equal(store.account().calls, 1);
+  assert.equal(store.account().spentMicroUsd, 44000);
+  const replay = await reserveOnConditionalStore(store, blobCharge(4, { idempotencyKey: "idem-other-key" }));
+  assert.equal(replay.reason, "replay_rejected");
+  assert.equal(store.account().calls, 1);
+  const missing = await reserveOnConditionalStore({}, blobCharge(5));
+  assert.equal(missing.reason, "reservation_store_unavailable");
+  zeroCalls();
+});
+
+await check("the dollar ceiling rejects a charge the call cap would still allow", async () => {
+  const store = fakeConditionalStore({
+    account: { spentMicroUsd: 180_000, calls: 0, holds: {} },
+  });
+  const result = await reserveOnConditionalStore(store, blobCharge(6));
+  assert.equal(result.reason, "budget_exhausted");
+  assert.equal(store.account().spentMicroUsd, 180_000);
+  assert.equal(store.account().calls, 0);
   zeroCalls();
 });
 

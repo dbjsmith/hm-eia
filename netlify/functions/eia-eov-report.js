@@ -11,8 +11,9 @@ import { readEovPolicy } from "./_shared/eov-policy.js";
  *
  * The PDF stays in the report app. This function does not call a model or
  * a shadow provider. Production controls are an unavailable binding issuer,
- * a Blobs adapter that refuses non-atomic reservation, and an explicit
- * policy with no default model or amount. Tests may inject fixtures.
+ * and a Blobs adapter that does not open a live store. Conditional
+ * onlyIfMatch reservation is implemented for an injected store and is
+ * unverified against deployed Blobs. Tests may inject fixtures.
  */
 
 const WINDOW_MS = 10 * 60 * 1000;
