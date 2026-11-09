@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import eovReport, { setEovControlsForTests } from "../netlify/functions/eia-eov-report.js";
 import { assessEovReport, decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
 import { canonicalAssertion, fixtureBindingVerifier, packAssertion, reportBindingVerifier, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
-import { blobsGetSetLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
+import { blobsGetSetLedger, casBlobsLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
 import { admitDeclaredTokens, worstCaseMicroUsd } from "../netlify/functions/_shared/eov-tokens.js";
@@ -547,6 +547,57 @@ await check("an unsynchronised get/set loses updates and Blobs is not asked to s
   });
   assert.equal(refused.reason, "reservation_store_unavailable");
   assert.equal(writes, 0);
+  zeroCalls();
+});
+
+await check("casBlobsLedger reserves and releases with onlyIfMatch writes", async () => {
+  const rows = new Map();
+  let seq = 1;
+  const writes = [];
+  const store = {
+    async getWithMetadata(key, options) {
+      if (options?.consistency !== "strong" || options?.type !== "json") throw new Error("read was not strong json");
+      const row = rows.get(key);
+      if (!row) return null;
+      return { data: JSON.parse(JSON.stringify(row.value)), etag: row.etag };
+    },
+    async setJSON(key, value, options = {}) {
+      const conditional = options.onlyIfNew === true || typeof options.onlyIfMatch === "string";
+      if (!conditional) throw new Error("unconditional write");
+      writes.push({ key, onlyIfNew: options.onlyIfNew === true, onlyIfMatch: options.onlyIfMatch || null });
+      const row = rows.get(key);
+      if (options.onlyIfNew === true) {
+        if (row) return { modified: false };
+        const etag = `e${seq += 1}`;
+        rows.set(key, { etag, value: JSON.parse(JSON.stringify(value)) });
+        return { modified: true, etag };
+      }
+      if (!row || row.etag !== options.onlyIfMatch) return { modified: false };
+      const etag = `e${seq += 1}`;
+      rows.set(key, { etag, value: JSON.parse(JSON.stringify(value)) });
+      return { modified: true, etag };
+    },
+  };
+  const ledger = casBlobsLedger(store);
+  const charge = {
+    minor: 7,
+    ceilingMinor: 50,
+    confirmationId: "confirm-cas-1",
+    idempotencyKey: "idem-cas-1",
+    inputTokens: 10,
+    outputTokens: 10,
+    maxInputTokens: 100,
+    maxOutputTokens: 100,
+  };
+  const reserved = await reserveEovSpend(ledger, charge);
+  assert.equal(reserved.reason, "reserved");
+  assert.equal(reserved.spentMinor, 7);
+  assert.equal(writes.every((w) => w.onlyIfNew || w.onlyIfMatch), true);
+  const replay = await reserveEovSpend(ledger, { ...charge, idempotencyKey: "idem-cas-2" });
+  assert.equal(replay.reason, "replay_rejected");
+  const released = await releaseUninvokedHold(ledger, charge);
+  assert.equal(released.reason, "released");
+  assert.equal((await ledger.read()).spentMinor, 0);
   zeroCalls();
 });
 

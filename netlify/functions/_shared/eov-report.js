@@ -214,8 +214,9 @@ function httpForLedger(reason) {
 
 /**
  * Server-side assessment. `verifier`, `ledger`, and `policy` are injected.
- * The production handler injects an unavailable issuer, a non-atomic Blobs
- * adapter, and whatever explicit env policy exists (none by default).
+ * The production handler injects an unavailable issuer when no public key
+ * is configured, a CAS Blobs ledger when the store opens, and whatever
+ * explicit env policy exists (none by default).
  * A passing fixture still rolls the hold back and does not call a model.
  */
 export async function assessEovReport({

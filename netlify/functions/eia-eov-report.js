@@ -3,17 +3,18 @@ import { authoriseRequest } from "./_shared/eia-auth.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
 import { assessEovReport } from "./_shared/eov-report.js";
 import { readBindingConfig, reportBindingVerifier } from "./_shared/eov-verifier.js";
-import { blobsGetSetLedger } from "./_shared/eov-ledger.js";
+import { blobsGetSetLedger, openEovBlobsLedger } from "./_shared/eov-ledger.js";
 import { readEovPolicy } from "./_shared/eov-policy.js";
 
 /**
  * Metadata gate for a future EOV report reading.
  *
  * The PDF stays in the report app. This function does not call a model or
- * a shadow provider. Production controls are an unavailable binding issuer,
- * and a Blobs adapter that does not open a live store. Conditional
- * onlyIfMatch reservation is implemented for an injected store and is
- * unverified against deployed Blobs. Tests may inject fixtures.
+ * a shadow provider. Order is auth -> binding verification -> ledger
+ * reservation -> provider. With no configured binding issuer, assessment
+ * returns issuer_unavailable and never opens the provider path. The live
+ * Netlify Blobs store (eia-spend) backs the CAS ledger and request_id
+ * replay when assessment reaches those steps. Tests may inject fixtures.
  */
 
 const WINDOW_MS = 10 * 60 * 1000;
@@ -26,11 +27,13 @@ export function setEovControlsForTests(controls) {
   testControls = controls || null;
 }
 
-function activeControls() {
+async function activeControls() {
   if (testControls) return testControls;
+  const opened = await openEovBlobsLedger();
   return {
     verifier: reportBindingVerifier(readBindingConfig()),
-    ledger: blobsGetSetLedger(null),
+    ledger: opened?.ledger || blobsGetSetLedger(null),
+    replayStore: opened?.store || null,
     policy: readEovPolicy(),
   };
 }
@@ -82,13 +85,19 @@ export default async (req) => {
     return gate(req, 400, "invalid_json");
   }
 
-  const controls = activeControls();
+  const controls = await activeControls();
+  // Binding must fail closed before any provider path. assessEovReport
+  // reserves then rolls back; it never invokes a model.
+  if (!controls.verifier || typeof controls.verifier.verify !== "function") {
+    return gate(req, 403, "issuer_unavailable");
+  }
   const decision = await assessEovReport({
     body,
     auth: { kind: auth.kind },
     verifier: controls.verifier,
     ledger: controls.ledger,
     policy: controls.policy,
+    replayStore: controls.replayStore || null,
   });
   console.log("[eia-eov-report]", { status: decision.payload.status, reason: decision.payload.reason });
   return jsonResponse(req, decision.payload, decision.httpStatus);
