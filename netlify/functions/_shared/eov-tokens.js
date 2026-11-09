@@ -4,10 +4,11 @@
  *
  * Prices are the published base rates for claude-sonnet-5-5: $2 / MTok input
  * and $10 / MTok output. Amounts are integer millionths of a US dollar.
- * 12,000 input tokens cost 24,000 micro-USD ($0.024). 2,000 output tokens
- * cost 20,000 micro-USD ($0.020). One call at both ceilings is 44,000
- * micro-USD. Three such calls are 132,000 micro-USD, under the 200,000
- * micro-USD ($0.20) ceiling.
+ * 12,000 input tokens cost 24,000 micro-USD ($0.024). 10,000 output tokens
+ * cost 100,000 micro-USD ($0.100). One call at both ceilings is 124,000
+ * micro-USD ($0.124). The call cap remains 3 and the spend ceiling remains
+ * 200,000 micro-USD ($0.20); at this worst-case size the spend ceiling
+ * admits only one full reservation before budget_exhausted.
  *
  * Token admission compares declared integers with those ceilings. It does
  * not count tokens and does not treat byte length as a token count.
@@ -16,7 +17,7 @@
 export const TEST_MODEL_ID = "claude-sonnet-5-5";
 export const TEST_MAX_CALLS = 3;
 export const TEST_MAX_INPUT_TOKENS = 12000;
-export const TEST_MAX_OUTPUT_TOKENS = 2000;
+export const TEST_MAX_OUTPUT_TOKENS = 10000;
 export const TEST_CEILING_MICRO_USD = 200_000;
 export const INPUT_MICRO_USD_PER_TOKEN = 2;
 export const OUTPUT_MICRO_USD_PER_TOKEN = 10;

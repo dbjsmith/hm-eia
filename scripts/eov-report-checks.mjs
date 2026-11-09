@@ -340,7 +340,7 @@ await check("explicit env policy still cannot open the provider without an issue
     EIA_EOV_BUDGET_MINOR: "20",
     EIA_EOV_MAX_CALL_MINOR: "5",
     EIA_EOV_MAX_INPUT_TOKENS: "12000",
-    EIA_EOV_MAX_OUTPUT_TOKENS: "2000",
+    EIA_EOV_MAX_OUTPUT_TOKENS: "10000",
   };
   const saved = {};
   for (const [key, value] of Object.entries(names)) {
@@ -371,7 +371,7 @@ const researchFixturePolicy = {
   ceilingMinor: 20,
   maxCallMinor: 5,
   maxInputTokens: 12000,
-  maxOutputTokens: 2000,
+  maxOutputTokens: 10000,
 };
 
 function fixtureClaims(overrides = {}) {
@@ -656,24 +656,36 @@ function blobCharge(index, overrides = {}) {
 }
 
 await check("declared token ceilings are not inferred from byte length", () => {
-  assert.equal(worstCaseMicroUsd(), 44000);
-  assert.equal(admitDeclaredTokens({ input_tokens: 12000, output_tokens: 2000 }).ok, true);
+  assert.equal(worstCaseMicroUsd(), 124000);
+  assert.equal(admitDeclaredTokens({ input_tokens: 12000, output_tokens: 10000 }).ok, true);
   assert.equal(admitDeclaredTokens({ input_tokens: 12001, output_tokens: 1 }).reason, "token_limit_rejected");
-  assert.equal(admitDeclaredTokens({ input_tokens: 1, output_tokens: 2001 }).reason, "token_limit_rejected");
+  assert.equal(admitDeclaredTokens({ input_tokens: 1, output_tokens: 10001 }).reason, "token_limit_rejected");
   const wide = { input_tokens: 100, output_tokens: 50, byte_length: 5_000_000 };
   assert.equal(admitDeclaredTokens(wide).ok, true);
   assert.equal(admitDeclaredTokens(wide).accounting, "declared_not_counted");
   zeroCalls();
 });
 
-await check("conditional store reserves at most three calls and survives an etag conflict", async () => {
+await check("conditional store admits one worst-case call under the spend ceiling and still enforces the call cap", async () => {
+  // Worst-case reservation is 124,000 micro-USD; ceiling is 200,000. Only one
+  // full call fits. The call cap (3) is unchanged and still binds when spend allows.
   const store = fakeConditionalStore();
   const results = await Promise.all([0, 1, 2, 3].map((index) => reserveOnConditionalStore(store, blobCharge(index))));
-  assert.equal(results.filter((item) => item.reason === "reserved").length, 3);
-  assert.equal(results.filter((item) => item.reason === "call_cap").length, 1);
-  assert.equal(store.account().calls, 3);
-  assert.equal(store.account().spentMicroUsd, 132000);
+  assert.equal(results.filter((item) => item.reason === "reserved").length, 1);
+  assert.equal(results.filter((item) => item.reason === "budget_exhausted").length, 3);
+  assert.equal(store.account().calls, 1);
+  assert.equal(store.account().spentMicroUsd, 124000);
   assert.equal(store.writes.every((write) => write.onlyIfNew || write.onlyIfMatch), true);
+
+  const nearCap = fakeConditionalStore({
+    account: { spentMicroUsd: 0, calls: 2, holds: {} },
+  });
+  const last = await reserveOnConditionalStore(nearCap, blobCharge(9));
+  assert.equal(last.reason, "reserved");
+  assert.equal(nearCap.account().calls, 3);
+  const capped = await reserveOnConditionalStore(nearCap, blobCharge(10));
+  assert.equal(capped.reason, "call_cap");
+  assert.equal(nearCap.account().calls, 3);
 
   const conflicted = fakeConditionalStore({
     failMatches: 1,
@@ -682,7 +694,7 @@ await check("conditional store reserves at most three calls and survives an etag
   const retried = await reserveOnConditionalStore(conflicted, blobCharge(7));
   assert.equal(retried.reason, "reserved");
   assert.equal(conflicted.account().calls, 1);
-  assert.equal(conflicted.account().spentMicroUsd, 44000);
+  assert.equal(conflicted.account().spentMicroUsd, 124000);
 
   const stuck = fakeConditionalStore({
     failMatches: 5,
@@ -694,14 +706,13 @@ await check("conditional store reserves at most three calls and survives an etag
   assert.equal(stuck.account().spentMicroUsd, 0);
   zeroCalls();
 });
-
 await check("conditional retries are idempotent and a second confirmation is replay", async () => {
   const store = fakeConditionalStore();
   const charge = blobCharge(4);
   const results = await Promise.all(Array.from({ length: 8 }, () => reserveOnConditionalStore(store, charge)));
   assert.equal(results.every((item) => item.ok && (item.reason === "reserved" || item.reason === "idempotent")), true);
   assert.equal(store.account().calls, 1);
-  assert.equal(store.account().spentMicroUsd, 44000);
+  assert.equal(store.account().spentMicroUsd, 124000);
   const replay = await reserveOnConditionalStore(store, blobCharge(4, { idempotencyKey: "idem-other-key" }));
   assert.equal(replay.reason, "replay_rejected");
   assert.equal(store.account().calls, 1);
