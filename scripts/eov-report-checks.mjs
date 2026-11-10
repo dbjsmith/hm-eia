@@ -666,26 +666,40 @@ await check("declared token ceilings are not inferred from byte length", () => {
   zeroCalls();
 });
 
-await check("conditional store admits one worst-case call under the spend ceiling and still enforces the call cap", async () => {
-  // Worst-case reservation is 124,000 micro-USD; ceiling is 200,000. Only one
-  // full call fits. The call cap (3) is unchanged and still binds when spend allows.
+await check("conditional store admits eight worst-case calls under the spend ceiling and still enforces the call cap", async () => {
+  // Worst-case reservation is 124,000 micro-USD; ceiling is 1,000,000.
+  // Eight full calls fit (992,000). The ninth is budget_exhausted. The
+  // call cap (10) still binds when spend allows. Reservations are made
+  // in sequence because concurrent CAS is limited to five attempts.
   const store = fakeConditionalStore();
-  const results = await Promise.all([0, 1, 2, 3].map((index) => reserveOnConditionalStore(store, blobCharge(index))));
-  assert.equal(results.filter((item) => item.reason === "reserved").length, 1);
-  assert.equal(results.filter((item) => item.reason === "budget_exhausted").length, 3);
-  assert.equal(store.account().calls, 1);
-  assert.equal(store.account().spentMicroUsd, 124000);
+  const reserved = [];
+  for (let index = 0; index < 8; index += 1) {
+    reserved.push(await reserveOnConditionalStore(store, blobCharge(index)));
+  }
+  assert.equal(reserved.every((item) => item.reason === "reserved"), true);
+  assert.equal(store.account().calls, 8);
+  assert.equal(store.account().spentMicroUsd, 992000);
+  const ninth = await reserveOnConditionalStore(store, blobCharge(8));
+  assert.equal(ninth.reason, "budget_exhausted");
+  assert.equal(store.account().calls, 8);
+  assert.equal(store.account().spentMicroUsd, 992000);
   assert.equal(store.writes.every((write) => write.onlyIfNew || write.onlyIfMatch), true);
 
+  const raced = fakeConditionalStore();
+  const concurrent = await Promise.all([30, 31, 32].map((index) => reserveOnConditionalStore(raced, blobCharge(index))));
+  assert.equal(concurrent.filter((item) => item.reason === "reserved").length, 3);
+  assert.equal(raced.account().calls, 3);
+  assert.equal(raced.account().spentMicroUsd, 372000);
+
   const nearCap = fakeConditionalStore({
-    account: { spentMicroUsd: 0, calls: 2, holds: {} },
+    account: { spentMicroUsd: 0, calls: 9, holds: {} },
   });
-  const last = await reserveOnConditionalStore(nearCap, blobCharge(9));
+  const last = await reserveOnConditionalStore(nearCap, blobCharge(20));
   assert.equal(last.reason, "reserved");
-  assert.equal(nearCap.account().calls, 3);
-  const capped = await reserveOnConditionalStore(nearCap, blobCharge(10));
+  assert.equal(nearCap.account().calls, 10);
+  const capped = await reserveOnConditionalStore(nearCap, blobCharge(21));
   assert.equal(capped.reason, "call_cap");
-  assert.equal(nearCap.account().calls, 3);
+  assert.equal(nearCap.account().calls, 10);
 
   const conflicted = fakeConditionalStore({
     failMatches: 1,
@@ -723,11 +737,11 @@ await check("conditional retries are idempotent and a second confirmation is rep
 
 await check("the dollar ceiling rejects a charge the call cap would still allow", async () => {
   const store = fakeConditionalStore({
-    account: { spentMicroUsd: 180_000, calls: 0, holds: {} },
+    account: { spentMicroUsd: 900_000, calls: 0, holds: {} },
   });
   const result = await reserveOnConditionalStore(store, blobCharge(6));
   assert.equal(result.reason, "budget_exhausted");
-  assert.equal(store.account().spentMicroUsd, 180_000);
+  assert.equal(store.account().spentMicroUsd, 900_000);
   assert.equal(store.account().calls, 0);
   zeroCalls();
 });

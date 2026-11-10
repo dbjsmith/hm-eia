@@ -6,19 +6,19 @@
  * and $10 / MTok output. Amounts are integer millionths of a US dollar.
  * 12,000 input tokens cost 24,000 micro-USD ($0.024). 10,000 output tokens
  * cost 100,000 micro-USD ($0.100). One call at both ceilings is 124,000
- * micro-USD ($0.124). The call cap remains 3 and the spend ceiling remains
- * 200,000 micro-USD ($0.20); at this worst-case size the spend ceiling
- * admits only one full reservation before budget_exhausted.
+ * micro-USD ($0.124). The call cap is 10 and the spend ceiling is
+ * 1,000,000 micro-USD ($1.00); at this worst-case size the spend ceiling
+ * admits eight full reservations before budget_exhausted.
  *
  * Token admission compares declared integers with those ceilings. It does
  * not count tokens and does not treat byte length as a token count.
  */
 
 export const TEST_MODEL_ID = "claude-sonnet-5-5";
-export const TEST_MAX_CALLS = 3;
+export const TEST_MAX_CALLS = 10;
 export const TEST_MAX_INPUT_TOKENS = 12000;
 export const TEST_MAX_OUTPUT_TOKENS = 10000;
-export const TEST_CEILING_MICRO_USD = 200_000;
+export const TEST_CEILING_MICRO_USD = 1_000_000;
 export const INPUT_MICRO_USD_PER_TOKEN = 2;
 export const OUTPUT_MICRO_USD_PER_TOKEN = 10;
 
