@@ -2,8 +2,10 @@
  * EOV report adapter v0 — decision gate only.
  *
  * This module does not call a model, a shadow provider, GeoDataTrack, or
- * ecoregion.net. It does not write to GeoDataTrack. It does not accept PDF
- * bytes or a raw property apikey. A reading is not produced here.
+ * ecoregion.net. It does not write to GeoDataTrack. It does not accept a raw
+ * property apikey. On the report-bytes-v1.1 path it accepts PDF bytes only
+ * to hash and verify them against the signed claim; the bytes are never
+ * sent to a model. A reading is not produced here.
  *
  * Prompt428 `ai_consent` is a reported same-row flag, not source-confirmed
  * and not a cryptographic consent proof. `false` withholds inference.
@@ -15,11 +17,16 @@
  * and not distributed proof. Declared token numbers are not tokenised.
  */
 
-import { ASSERTION_SKEW_SECONDS, EOV_AUDIENCE } from "./eov-verifier.js";
+import {
+  ASSERTION_SKEW_SECONDS,
+  CONTRACT_V11,
+  EOV_AUDIENCE,
+} from "./eov-verifier.js";
 import { policyGap } from "./eov-policy.js";
 import { releaseUninvokedHold, reserveEovSpend } from "./eov-ledger.js";
 
 export const ADAPTER_VERSION = "eov-report-v0";
+export const MAX_PDF_BYTES = 4 * 1024 * 1024;
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const RAW_PROPERTY_KEY = /^[a-f0-9]{40}$/i;
@@ -39,24 +46,30 @@ const FORBIDDEN_KEYS = new Set([
 ]);
 
 function decision(httpStatus, status, reason, extra = {}) {
-  return {
-    httpStatus,
-    payload: {
-      adapter_version: ADAPTER_VERSION,
-      ok: status === "withheld",
-      status,
-      reason,
-      provider_calls: 0,
-      shadow_calls: 0,
-      shadow: "forced_off",
-      inference: "not_called",
-      verification: extra.verification || "offline_gate",
-      draft: null,
-      writes_to_gdt: false,
-      token_accounting: "not_tokenised",
-      reservation: extra.reservation || "not_attempted",
-    },
+  const payload = {
+    adapter_version: ADAPTER_VERSION,
+    ok: status === "withheld" || status === "verified",
+    status,
+    reason,
+    provider_calls: 0,
+    shadow_calls: 0,
+    shadow: "forced_off",
+    inference: "not_called",
+    verification: extra.verification || "offline_gate",
+    draft: null,
+    writes_to_gdt: false,
+    token_accounting: "not_tokenised",
+    reservation: extra.reservation || "not_attempted",
   };
+  if (extra.verified === true) {
+    payload.verified = true;
+    payload.stage = extra.stage || "verifier_only";
+    if (extra.kid != null) payload.kid = extra.kid;
+    if (extra.request_id != null) payload.request_id = extra.request_id;
+    payload.sha256_match = extra.sha256_match === true;
+    if (extra.sha256) payload.sha256 = extra.sha256;
+  }
+  return { httpStatus, payload };
 }
 
 function reasonForForbidden(key) {
@@ -167,18 +180,22 @@ export function decideEovReport({
   return decision(403, "blocked", "token_policy_unapproved");
 }
 
-function claimMismatch(body, claims, auth, now) {
+function claimMismatch(body, claims, auth, now, skewSeconds = ASSERTION_SKEW_SECONDS) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "binding_rejected";
   if (claims.assertion === true) {
     // Audience is already checked by the v1.1 verifier (gdt-app:<id>).
     // report_id is an integer in the assertion and a string on the body.
     // GDT's consent_id is not EIA's send confirmation_id; they are not compared.
-    if (String(claims.report_id) !== String(body.report.report_id)) return "scope_mismatch_report";
-    if (claims.sha256 !== body.report.sha256) return "scope_mismatch_digest";
+    // body.report is optional on the v1.1 HTTP path (identity may carry the ids).
+    if (body.report?.report_id != null && String(claims.report_id) !== String(body.report.report_id)) {
+      return "scope_mismatch_report";
+    }
+    if (body.report?.sha256 != null && claims.sha256 !== body.report.sha256) return "scope_mismatch_digest";
     if (body.property_id != null && String(claims.property_id) !== String(body.property_id)) {
       return "scope_mismatch_property";
     }
-    if (!Number.isInteger(claims.exp) || now > (claims.exp + ASSERTION_SKEW_SECONDS) * 1000) {
+    const skew = Number.isInteger(skewSeconds) && skewSeconds >= 0 ? skewSeconds : ASSERTION_SKEW_SECONDS;
+    if (!Number.isInteger(claims.exp) || now > (claims.exp + skew) * 1000) {
       return "scope_expired";
     }
     if (claims.primary_consent !== true) return "primary_consent_refused";
@@ -218,12 +235,153 @@ function httpForLedger(reason) {
   return 403;
 }
 
+const V11_FORBIDDEN = new Set([
+  "property_apikey",
+  "access_token",
+  "authorization",
+  "bound_scope",
+  "trusted_scope",
+  "budget",
+  "primary_consent",
+  "model",
+]);
+
+/**
+ * Decode top-level pdf_base64 (standard or base64url) into the exact PDF
+ * bytes. Returns null when the value is missing or not valid base64, or
+ * when the bytes are empty or larger than MAX_PDF_BYTES.
+ */
+export function decodePdfBase64(value) {
+  if (typeof value !== "string" || !value) return null;
+  const trimmed = value.replace(/\s+/g, "");
+  if (!trimmed) return null;
+  const urlSafe = /^[A-Za-z0-9_-]+$/.test(trimmed);
+  const std = /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed);
+  if (!urlSafe && !std) return null;
+  let buf;
+  try {
+    buf = Buffer.from(trimmed, urlSafe && !std ? "base64url" : "base64");
+  } catch {
+    return null;
+  }
+  if (!buf.length || buf.length > MAX_PDF_BYTES) return null;
+  return buf;
+}
+
+function identityMismatch(identity, claims) {
+  if (identity == null) return null;
+  if (typeof identity !== "object" || Array.isArray(identity)) return "invalid_body";
+  if (typeof identity.property_apikey === "string" && identity.property_apikey) {
+    return "raw_property_key_refused";
+  }
+  const fields = [
+    "iss", "kid", "aud", "install_id", "org_id",
+    "property_id", "report_id", "request_id", "iat", "exp",
+  ];
+  for (const field of fields) {
+    if (identity[field] != null && String(identity[field]) !== String(claims[field])) {
+      return "identity_mismatch";
+    }
+  }
+  return null;
+}
+
+export function verifierOnlyRequested(options = {}, policy = null, env = process.env) {
+  if (options.verifierOnly === true) return true;
+  if (env.EIA_EOV_VERIFIER_ONLY === "true") return true;
+  return Boolean(policyGap(policy));
+}
+
+function verifierOnlyDecision(claims, verification) {
+  return decision(200, "verified", "verifier_only", {
+    verification,
+    verified: true,
+    stage: "verifier_only",
+    kid: claims.kid,
+    request_id: claims.request_id,
+    sha256_match: true,
+    sha256: claims.sha256,
+  });
+}
+
+async function assessV11Report({
+  body,
+  verifier,
+  now,
+  replayStore,
+  policy,
+  verifierOnly,
+  skewSeconds,
+}) {
+  if (body.pdf != null || body.pdf_bytes != null) {
+    return decision(400, "blocked", "invalid_body");
+  }
+  for (const key of Object.keys(body)) {
+    if (V11_FORBIDDEN.has(key)) return decision(400, "blocked", reasonForForbidden(key));
+  }
+
+  const token = typeof body.gdt_assertion === "string" && body.gdt_assertion
+    ? body.gdt_assertion
+    : (typeof body.binding_token === "string" ? body.binding_token : null);
+  if (typeof token !== "string" || token.length < 1 || token.length > 8192) {
+    return decision(403, "blocked", "binding_required");
+  }
+
+  if (body.pdf_base64 == null) {
+    return decision(400, "blocked", "report_bytes_required");
+  }
+  const reportBytes = decodePdfBase64(body.pdf_base64);
+  if (!reportBytes) return decision(400, "blocked", "invalid_pdf");
+
+  if (!verifier || typeof verifier.verify !== "function") {
+    return decision(403, "blocked", "issuer_unavailable");
+  }
+
+  const requestId = typeof body.request_id === "string"
+    ? body.request_id
+    : (typeof body.identity?.request_id === "string" ? body.identity.request_id : undefined);
+
+  const verified = await verifier.verify(token, {
+    reportBytes,
+    replayStore,
+    now,
+    requestId,
+    contract: CONTRACT_V11,
+  });
+  if (!verified?.ok) {
+    const status = verified?.reason === "replay_rejected" ? 409 : 403;
+    return decision(status, "blocked", verified?.reason || "issuer_unavailable", {
+      verification: "report-bytes-v1.1",
+    });
+  }
+
+  const mismatch = claimMismatch(body, verified.claims, null, now, skewSeconds);
+  if (mismatch) {
+    return decision(403, "blocked", mismatch, { verification: "report-bytes-v1.1" });
+  }
+  const idMismatch = identityMismatch(body.identity, verified.claims);
+  if (idMismatch) {
+    return decision(403, "blocked", idMismatch, { verification: "report-bytes-v1.1" });
+  }
+
+  // A verified v1.1 request never opens a provider path in this adapter.
+  if (verifierOnlyRequested({ verifierOnly }, policy)) {
+    return verifierOnlyDecision(verified.claims, "report-bytes-v1.1");
+  }
+  return decision(403, "blocked", "provider_path_closed", {
+    verification: "report-bytes-v1.1",
+    reservation: "not_attempted",
+  });
+}
+
 /**
  * Server-side assessment. `verifier`, `ledger`, and `policy` are injected.
  * The production handler injects an unavailable issuer when no public key
  * is configured, a CAS Blobs ledger when the store opens, and whatever
  * explicit env policy exists (none by default).
  * A passing fixture still rolls the hold back and does not call a model.
+ * A verified report-bytes-v1.1 request stops after the verifier when
+ * EIA_EOV_VERIFIER_ONLY is true or no provider is configured.
  */
 export async function assessEovReport({
   body,
@@ -234,7 +392,24 @@ export async function assessEovReport({
   now = Date.now(),
   reportBytes = null,
   replayStore = null,
+  verifierOnly = false,
+  skewSeconds = ASSERTION_SKEW_SECONDS,
 } = {}) {
+  if (body && typeof body === "object" && !Array.isArray(body) && typeof body.contract === "string") {
+    if (body.contract !== CONTRACT_V11) {
+      return decision(403, "blocked", "unsupported_contract");
+    }
+    return assessV11Report({
+      body,
+      verifier,
+      now,
+      replayStore,
+      policy,
+      verifierOnly,
+      skewSeconds,
+    });
+  }
+
   const early = decideEovReport({ body, now });
   if (early.payload.reason !== "trust_unavailable") return early;
 
@@ -252,11 +427,15 @@ export async function assessEovReport({
       verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
     });
   }
-  const mismatch = claimMismatch(body, verified.claims, auth, now);
+  const mismatch = claimMismatch(body, verified.claims, auth, now, skewSeconds);
   if (mismatch) {
     return decision(403, "blocked", mismatch, {
       verification: verifier.kind === "test-fixture" ? "fixture_not_issuer" : "offline_gate",
     });
+  }
+
+  if (verified.claims?.assertion === true && verifierOnlyRequested({ verifierOnly }, policy)) {
+    return verifierOnlyDecision(verified.claims, "offline_gate");
   }
 
   const gap = policyGap(policy);

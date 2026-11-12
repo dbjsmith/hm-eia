@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import eovReport, { setEovControlsForTests } from "../netlify/functions/eia-eov-report.js";
-import { assessEovReport, decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
-import { canonicalAssertion, canonicalJson, fixtureBindingVerifier, importEd25519Public, packAssertion, readBindingConfig, reportBindingVerifier, trustDevIssuer, DEV_KID, DEV_PUBLIC_KEY_B64U, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
+import { assessEovReport, decideEovReport, decodePdfBase64, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
+import { assertionSkewSeconds, canonicalAssertion, canonicalJson, fixtureBindingVerifier, importEd25519Public, packAssertion, readBindingConfig, reportBindingVerifier, trustDevIssuer, CONTRACT_V11, DEV_KID, DEV_PUBLIC_KEY_B64U, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
 import { blobsGetSetLedger, casBlobsLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
@@ -936,8 +936,16 @@ await check("a valid ed25519 assertion still makes no provider call", async () =
     reportBytes: assertionBytes,
     replayStore: onlyNewStore(),
   });
-  assert.equal(assessed.payload.reason, "budget_unapproved");
+  assert.equal(assessed.httpStatus, 200);
+  assert.equal(assessed.payload.ok, true);
+  assert.equal(assessed.payload.verified, true);
+  assert.equal(assessed.payload.stage, "verifier_only");
+  assert.equal(assessed.payload.reason, "verifier_only");
+  assert.equal(assessed.payload.sha256_match, true);
+  assert.equal(assessed.payload.kid, "test-kid-1");
+  assert.equal(assessed.payload.request_id, "request-assess");
   assert.equal(assessed.payload.provider_calls, 0);
+  assert.equal(assessed.payload.inference, "not_called");
   assert.equal(assessed.payload.shadow, "forced_off");
   zeroCalls();
 });
@@ -1017,6 +1025,175 @@ await check("the GDT dev key cannot be trusted in the production context", async
   assert.equal(noFlag.keys[DEV_KID], undefined);
   assert.equal(trustDevIssuer({ CONTEXT: "deploy-preview" }), false);
   zeroCalls();
+});
+
+await check("assertion clock skew is configurable and defaults to a provisional 30 seconds", async () => {
+  const tight = testVerifier({ skewSeconds: 0 });
+  const payload = assertionPayload({ request_id: "request-skew-0" });
+  const late = await tight.verify(edAssertion(payload), {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: (payload.iat + 300) * 1000 + 20_000,
+  });
+  assert.equal(late.reason, "assertion_expired");
+  const wide = testVerifier({ skewSeconds: 60 });
+  const ok = await wide.verify(edAssertion({ ...payload, request_id: "request-skew-60" }), {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: (payload.iat + 300) * 1000 + 31_000,
+  });
+  assert.equal(ok.ok, true);
+  assert.equal(assertionSkewSeconds({}), 30);
+  assert.equal(assertionSkewSeconds({ EIA_GDT_ASSERTION_SKEW_SECONDS: "0" }), 0);
+  assert.equal(assertionSkewSeconds({ EIA_GDT_ASSERTION_SKEW_SECONDS: "60" }), 60);
+  assert.equal(assertionSkewSeconds({ EIA_GDT_ASSERTION_SKEW_SECONDS: "-1" }), 30);
+  assert.equal(assertionSkewSeconds({ EIA_GDT_ASSERTION_SKEW_SECONDS: "301" }), 30);
+  zeroCalls();
+});
+
+const samplePdf = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
+
+function v11Body(overrides = {}, pdf = samplePdf, payloadOverrides = {}, nowSec = Math.floor(Date.now() / 1000)) {
+  const payload = assertionPayload({
+    request_id: "request-v11-http",
+    iat: nowSec,
+    exp: nowSec + 300,
+    ...payloadOverrides,
+  }, pdf);
+  return {
+    contract: CONTRACT_V11,
+    gdt_assertion: edAssertion(payload),
+    pdf_base64: pdf.toString("base64"),
+    request_id: payload.request_id,
+    identity: {
+      iss: payload.iss,
+      kid: payload.kid,
+      aud: payload.aud,
+      install_id: payload.install_id,
+      property_id: payload.property_id,
+      report_id: payload.report_id,
+      request_id: payload.request_id,
+      iat: payload.iat,
+      exp: payload.exp,
+    },
+    ...overrides,
+  };
+}
+
+await check("a report-bytes-v1.1 HTTP request verifies the received PDF and returns verifier-only success", async () => {
+  const body = v11Body();
+  setEovControlsForTests({
+    verifier: testVerifier(),
+    ledger: memoryLedger(),
+    policy: null,
+    replayStore: onlyNewStore(),
+    verifierOnly: true,
+  });
+  try {
+    const res = await eovReport(request(body));
+    const payload = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.verified, true);
+    assert.equal(payload.stage, "verifier_only");
+    assert.equal(payload.reason, "verifier_only");
+    assert.equal(payload.sha256_match, true);
+    assert.equal(payload.sha256, createHash("sha256").update(samplePdf).digest("hex"));
+    assert.equal(payload.kid, "test-kid-1");
+    assert.equal(payload.request_id, "request-v11-http");
+    assert.equal(payload.provider_calls, 0);
+    assert.equal(payload.inference, "not_called");
+    assert.equal(payload.draft, null);
+    assert.equal(payload.writes_to_gdt, false);
+    zeroCalls();
+  } finally {
+    setEovControlsForTests(null);
+  }
+});
+
+await check("v1.1 refuses a missing assertion, a garbage JWS, a digest mismatch, a bad identity, and a wrong contract", async () => {
+  setEovControlsForTests({
+    verifier: testVerifier(),
+    ledger: memoryLedger(),
+    policy: null,
+    replayStore: onlyNewStore(),
+    verifierOnly: true,
+  });
+  try {
+    const base = v11Body();
+    const noAssertion = { ...base };
+    delete noAssertion.gdt_assertion;
+    assert.equal((await (await eovReport(request(noAssertion))).json()).reason, "binding_required");
+
+    const garbage = await eovReport(request({ ...base, gdt_assertion: "not-a-jws", request_id: "request-v11-garbage" }));
+    const garbageBody = await garbage.json();
+    assert.equal(garbage.status, 403);
+    assert.equal(garbageBody.reason, "binding_rejected");
+    assert.equal(garbageBody.verified, undefined);
+    assert.equal(garbageBody.provider_calls, 0);
+    assert.equal(garbageBody.inference, "not_called");
+
+    const otherPdf = Buffer.from("%PDF-1.4\nother\n%%EOF\n");
+    const signedForSample = v11Body({}, samplePdf, { request_id: "request-v11-digest" });
+    const mismatch = await eovReport(request({
+      contract: CONTRACT_V11,
+      gdt_assertion: signedForSample.gdt_assertion,
+      pdf_base64: otherPdf.toString("base64"),
+      request_id: "request-v11-digest",
+    }));
+    assert.equal((await mismatch.json()).reason, "sha256_mismatch");
+
+    const badId = await eovReport(request(v11Body({
+      request_id: "request-v11-identity",
+      identity: { property_id: 999, request_id: "request-v11-identity" },
+    }, samplePdf, { request_id: "request-v11-identity" })));
+    const badIdBody = await badId.json();
+    assert.equal(badIdBody.reason, "identity_mismatch");
+
+    const wrongContract = await eovReport(request({ ...base, contract: "report-bytes-v1" }));
+    assert.equal((await wrongContract.json()).reason, "unsupported_contract");
+
+    const noPdf = await eovReport(request({
+      contract: CONTRACT_V11,
+      gdt_assertion: base.gdt_assertion,
+      request_id: "request-v11-nopdf",
+    }));
+    assert.equal((await noPdf.json()).reason, "report_bytes_required");
+
+    const decoded = decodePdfBase64(samplePdf.toString("base64"));
+    assert.deepEqual(decoded, samplePdf);
+    zeroCalls();
+  } finally {
+    setEovControlsForTests(null);
+  }
+});
+
+await check("pdf_base64 without a v1.1 contract is still refused, and a verified request never calls a provider", async () => {
+  // The existing pdf_bytes_refused check covers the old body. This one
+  // confirms a body that is otherwise consented still refuses pdf_base64
+  // when contract is absent, and that verifier-only success is 200 with
+  // inference not_called when no provider is configured.
+  const consentedPdf = await eovReport(request({ ...consentedBody(), pdf_base64: samplePdf.toString("base64") }));
+  assert.equal((await consentedPdf.json()).reason, "pdf_bytes_refused");
+  const noProvider = v11Body({ request_id: "request-v11-noprovider" }, samplePdf, { request_id: "request-v11-noprovider" });
+  setEovControlsForTests({
+    verifier: testVerifier(),
+    ledger: memoryLedger(),
+    policy: null,
+    replayStore: onlyNewStore(),
+    verifierOnly: false,
+  });
+  try {
+    const res = await eovReport(request(noProvider));
+    const payload = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(payload.reason, "verifier_only");
+    assert.equal(payload.provider_calls, 0);
+    assert.equal(payload.inference, "not_called");
+    zeroCalls();
+  } finally {
+    setEovControlsForTests(null);
+  }
 });
 
 await check("the same address is rate limited before a provider call", async () => {

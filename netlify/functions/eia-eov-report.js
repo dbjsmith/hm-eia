@@ -2,27 +2,30 @@ import { preflight, jsonResponse } from "./_shared/cors.js";
 import { authoriseRequest } from "./_shared/eia-auth.js";
 import { clientIp, takeToken } from "./_shared/rate-limit.js";
 import { assessEovReport } from "./_shared/eov-report.js";
-import { readBindingConfig, reportBindingVerifier } from "./_shared/eov-verifier.js";
+import { CONTRACT_V11, readBindingConfig, reportBindingVerifier } from "./_shared/eov-verifier.js";
 import { blobsGetSetLedger, openEovBlobsLedger } from "./_shared/eov-ledger.js";
 import { readEovPolicy } from "./_shared/eov-policy.js";
 export { EOV_REPORT_SYSTEM, EOV_PROMPT_VERSION } from "./_shared/eov-prompt.js";
 
 /**
- * Metadata gate for a future EOV report reading.
+ * EOV report endpoint.
  *
- * The PDF stays in the report app. This function does not call a model or
- * a shadow provider. Order is auth -> binding verification -> ledger
- * reservation -> provider. With no configured binding issuer, assessment
- * returns issuer_unavailable and never opens the provider path. The live
- * Netlify Blobs store (eia-spend) backs the CAS ledger and request_id
- * replay when assessment reaches those steps. The reading system prompt
- * lives in _shared/eov-prompt.js (re-exported here) for a future provider
- * path and for the offline synthetic harness. Tests may inject fixtures.
+ * On report-bytes-v1.1 it accepts a gdt_assertion JWS and the exact PDF
+ * bytes (pdf_base64), hashes those bytes, and checks the signature. It
+ * does not call a model or a shadow provider. Order is auth -> binding
+ * verification -> (verifier-only return, or ledger reservation). With no
+ * configured binding issuer, assessment returns issuer_unavailable and
+ * never opens the provider path. When EIA_EOV_VERIFIER_ONLY is true, or
+ * no provider is configured, a verified request returns a verifier-only
+ * success and stops. The live Netlify Blobs store (eia-spend) backs the
+ * CAS ledger and request_id replay when assessment reaches those steps.
+ * Tests may inject fixtures.
  */
 
 const WINDOW_MS = 10 * 60 * 1000;
 const WINDOW_LIMIT = 8;
 const MAX_BODY_BYTES = 8 * 1024;
+const MAX_V11_BODY_BYTES = 5 * 1024 * 1024;
 
 let testControls;
 
@@ -38,6 +41,7 @@ async function activeControls() {
     ledger: opened?.ledger || blobsGetSetLedger(null),
     replayStore: opened?.store || null,
     policy: readEovPolicy(),
+    verifierOnly: process.env.EIA_EOV_VERIFIER_ONLY === "true",
   };
 }
 
@@ -79,7 +83,7 @@ export default async (req) => {
   if (!limit.ok) return gate(req, 429, "rate_limited", { "Retry-After": String(limit.retryAfter) });
 
   const raw = await req.text();
-  if (raw.length > MAX_BODY_BYTES) return gate(req, 413, "body_too_large");
+  if (raw.length > MAX_V11_BODY_BYTES) return gate(req, 413, "body_too_large");
 
   let body;
   try {
@@ -88,9 +92,14 @@ export default async (req) => {
     return gate(req, 400, "invalid_json");
   }
 
+  if (raw.length > MAX_BODY_BYTES && body?.contract !== CONTRACT_V11) {
+    return gate(req, 413, "body_too_large");
+  }
+
   const controls = await activeControls();
   // Binding must fail closed before any provider path. assessEovReport
-  // reserves then rolls back; it never invokes a model.
+  // never invokes a model. A verified v1.1 request stops at the verifier
+  // when verifier-only is on or no provider is configured.
   if (!controls.verifier || typeof controls.verifier.verify !== "function") {
     return gate(req, 403, "issuer_unavailable");
   }
@@ -101,6 +110,7 @@ export default async (req) => {
     ledger: controls.ledger,
     policy: controls.policy,
     replayStore: controls.replayStore || null,
+    verifierOnly: controls.verifierOnly === true,
   });
   console.log("[eia-eov-report]", { status: decision.payload.status, reason: decision.payload.reason });
   return jsonResponse(req, decision.payload, decision.httpStatus);

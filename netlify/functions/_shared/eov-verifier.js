@@ -29,7 +29,22 @@ export const CONTRACT_V11 = "report-bytes-v1.1";
 export const EOV_AUDIENCE = "eia-eov-report";
 export const ASSERTION_ISS = "geodatatrack-dev";
 export const ASSERTION_TTL_SECONDS = 5 * 60;
-export const ASSERTION_SKEW_SECONDS = 30;
+/**
+ * Provisional clock-skew allowance, in seconds. This is an OPEN QUESTION
+ * with GDT: it is not in the contract, and GDT's own verify_assertion uses
+ * no skew. Override with EIA_GDT_ASSERTION_SKEW_SECONDS (an integer from
+ * 0 to ASSERTION_TTL_SECONDS). Invalid values fall back to this default.
+ */
+export const DEFAULT_ASSERTION_SKEW_SECONDS = 30;
+export const ASSERTION_SKEW_SECONDS = DEFAULT_ASSERTION_SKEW_SECONDS;
+
+export function assertionSkewSeconds(env = process.env) {
+  const raw = env.EIA_GDT_ASSERTION_SKEW_SECONDS;
+  if (raw == null || raw === "") return DEFAULT_ASSERTION_SKEW_SECONDS;
+  const n = typeof raw === "number" ? raw : (/^(0|[1-9]\d*)$/.test(String(raw)) ? Number(raw) : NaN);
+  if (!Number.isInteger(n) || n < 0 || n > ASSERTION_TTL_SECONDS) return DEFAULT_ASSERTION_SKEW_SECONDS;
+  return n;
+}
 export const DEV_KID = "gdt-dev-20261111-5e0d4528";
 export const DEV_PUBLIC_KEY_B64U = "Z6C7bDe7rY3axBbmNGT08HUNAEgai2B-lf6w_1BgOPE";
 
@@ -235,6 +250,7 @@ export function readBindingConfig(env = process.env) {
     audience,
     installId,
     context: typeof env.CONTEXT === "string" ? env.CONTEXT : "",
+    skewSeconds: assertionSkewSeconds(env),
   };
 }
 
@@ -272,11 +288,14 @@ function importKeyMap(keys) {
   return imported;
 }
 
-function windowReason(payload, now) {
+function windowReason(payload, now, skewSeconds = DEFAULT_ASSERTION_SKEW_SECONDS) {
   if (payload.exp <= payload.iat || payload.exp - payload.iat > ASSERTION_TTL_SECONDS) return "assertion_window";
   const nowSec = Math.floor(now / 1000);
-  if (payload.iat > nowSec + ASSERTION_SKEW_SECONDS) return "assertion_not_yet_valid";
-  if (nowSec > payload.exp + ASSERTION_SKEW_SECONDS) return "assertion_expired";
+  const skew = Number.isInteger(skewSeconds) && skewSeconds >= 0
+    ? Math.min(skewSeconds, ASSERTION_TTL_SECONDS)
+    : DEFAULT_ASSERTION_SKEW_SECONDS;
+  if (payload.iat > nowSec + skew) return "assertion_not_yet_valid";
+  if (nowSec > payload.exp + skew) return "assertion_expired";
   return null;
 }
 
@@ -365,7 +384,7 @@ export function reportBindingVerifier(config = {}) {
       if (typeof context.requestId === "string" && context.requestId !== payload.request_id) {
         return { ok: false, reason: "request_id_mismatch" };
       }
-      const timing = windowReason(payload, context.now ?? Date.now());
+      const timing = windowReason(payload, context.now ?? Date.now(), config.skewSeconds);
       if (timing) return { ok: false, reason: timing };
       if (payload.ai_consent !== true) return { ok: false, reason: "ai_consent_required" };
       if (context.reportBytes == null) return { ok: false, reason: "report_bytes_required" };
