@@ -15,7 +15,7 @@
  * and not distributed proof. Declared token numbers are not tokenised.
  */
 
-import { EOV_AUDIENCE } from "./eov-verifier.js";
+import { ASSERTION_SKEW_SECONDS, EOV_AUDIENCE } from "./eov-verifier.js";
 import { policyGap } from "./eov-policy.js";
 import { releaseUninvokedHold, reserveEovSpend } from "./eov-ledger.js";
 
@@ -170,12 +170,18 @@ export function decideEovReport({
 function claimMismatch(body, claims, auth, now) {
   if (!claims || typeof claims !== "object" || Array.isArray(claims)) return "binding_rejected";
   if (claims.assertion === true) {
-    if (claims.audience !== EOV_AUDIENCE) return "audience_mismatch";
-    if (claims.report_id !== body.report.report_id) return "scope_mismatch_report";
+    // Audience is already checked by the v1.1 verifier (gdt-app:<id>).
+    // report_id is an integer in the assertion and a string on the body.
+    // GDT's consent_id is not EIA's send confirmation_id; they are not compared.
+    if (String(claims.report_id) !== String(body.report.report_id)) return "scope_mismatch_report";
     if (claims.sha256 !== body.report.sha256) return "scope_mismatch_digest";
-    if (!Number.isInteger(claims.exp) || claims.exp * 1000 <= now) return "scope_expired";
+    if (body.property_id != null && String(claims.property_id) !== String(body.property_id)) {
+      return "scope_mismatch_property";
+    }
+    if (!Number.isInteger(claims.exp) || now > (claims.exp + ASSERTION_SKEW_SECONDS) * 1000) {
+      return "scope_expired";
+    }
     if (claims.primary_consent !== true) return "primary_consent_refused";
-    if (claims.confirmation_id !== body.consent.confirmation_id) return "send_confirmation_unbound";
     return null;
   }
   if (claims.audience !== EOV_AUDIENCE) return "audience_mismatch";

@@ -10,7 +10,7 @@ import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import eovReport, { setEovControlsForTests } from "../netlify/functions/eia-eov-report.js";
 import { assessEovReport, decideEovReport, ADAPTER_VERSION } from "../netlify/functions/_shared/eov-report.js";
-import { canonicalAssertion, fixtureBindingVerifier, packAssertion, reportBindingVerifier, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
+import { canonicalAssertion, canonicalJson, fixtureBindingVerifier, importEd25519Public, packAssertion, readBindingConfig, reportBindingVerifier, trustDevIssuer, DEV_KID, DEV_PUBLIC_KEY_B64U, EOV_AUDIENCE, ASSERTION_ISS } from "../netlify/functions/_shared/eov-verifier.js";
 import { blobsGetSetLedger, casBlobsLedger, memoryLedger, releaseUninvokedHold, reserveEovSpend, unsafeLostUpdateLedger } from "../netlify/functions/_shared/eov-ledger.js";
 import { readEovPolicy } from "../netlify/functions/_shared/eov-policy.js";
 import { reserveOnConditionalStore } from "../netlify/functions/_shared/eov-blobs-ledger.js";
@@ -748,8 +748,10 @@ await check("the dollar ceiling rejects a charge the call cap would still allow"
 
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const throwawayPublicPem = publicKey.export({ type: "spki", format: "pem" });
+const { privateKey: otherPrivateKey } = generateKeyPairSync("ed25519");
 const assertionNow = Date.parse("2026-11-09T18:46:00Z");
 const assertionBytes = Buffer.from("synthetic-eov-report-bytes");
+const TEST_AUD = "gdt-app:9";
 
 function onlyNewStore() {
   const seen = new Set();
@@ -767,15 +769,15 @@ function assertionPayload(overrides = {}, bytes = assertionBytes) {
   const nowSec = Math.floor(assertionNow / 1000);
   return {
     iss: ASSERTION_ISS,
-    aud: EOV_AUDIENCE,
-    install_id: "install-test-1",
-    org_id: "org-test-1",
-    property_id: "property-test-1",
-    report_id: "synthetic-report-1",
+    aud: TEST_AUD,
+    install_id: 70,
+    org_id: 7,
+    property_id: 501,
+    report_id: 41,
     sha256: createHash("sha256").update(bytes).digest("hex"),
     ai_consent: true,
-    consent_id: "consent-test-1",
-    consent_changed_at: "2026-11-09T18:00:00Z",
+    consent_id: 3301,
+    consent_at: "2026-11-09 18:00:00",
     request_id: "request-test-1",
     iat: nowSec,
     exp: nowSec + 300,
@@ -784,17 +786,41 @@ function assertionPayload(overrides = {}, bytes = assertionBytes) {
   };
 }
 
-function edAssertion(payload = assertionPayload()) {
+function edAssertion(payload = assertionPayload(), key = privateKey) {
   const canonical = canonicalAssertion(payload);
-  const sig = sign(null, Buffer.from(canonical, "utf8"), privateKey);
-  return packAssertion("ed25519", payload, sig);
+  if (!canonical) throw new Error("invalid test payload");
+  const header = canonicalJson({ alg: "EdDSA", kid: payload.kid, typ: "gdt-report+jws" });
+  const signingInput = `${Buffer.from(header, "utf8").toString("base64url")}.${Buffer.from(canonical, "utf8").toString("base64url")}`;
+  const sig = sign(null, Buffer.from(signingInput, "utf8"), key);
+  const token = packAssertion(payload, sig);
+  if (!token) throw new Error("failed to pack assertion");
+  return token;
 }
 
-function hmacAssertion(payload, secret) {
-  const canonical = canonicalAssertion(payload);
-  const sig = createHmac("sha256", secret).update(canonical).digest();
-  return packAssertion("hmac-sha256", payload, sig);
+function testVerifier(overrides = {}) {
+  return reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    audience: TEST_AUD,
+    ...overrides,
+  });
 }
+
+await check("canonical JSON matches GDT: keys sorted, no spaces, slashes and UTF-8 unescaped", () => {
+  assert.equal(canonicalJson({ b: true, a: { d: 2, c: "x/y é" } }), '{"a":{"c":"x/y é","d":2},"b":true}');
+  const payload = assertionPayload();
+  const canonical = canonicalAssertion(payload);
+  assert.equal(canonical.startsWith("{"), true);
+  assert.equal(/": /.test(canonical) || canonical.includes(", "), false);
+  assert.equal(canonical.includes("consent_at"), true);
+  assert.equal(canonical.includes("consent_changed_at"), false);
+  const parsed = JSON.parse(canonical);
+  assert.deepEqual(Object.keys(parsed), [
+    "ai_consent", "aud", "consent_at", "consent_id", "exp", "iat",
+    "install_id", "iss", "kid", "org_id", "property_id", "report_id",
+    "request_id", "sha256",
+  ]);
+  zeroCalls();
+});
 
 await check("a signed assertion is refused when no public key is configured", async () => {
   const closed = reportBindingVerifier({});
@@ -809,11 +835,7 @@ await check("a signed assertion is refused when no public key is configured", as
 });
 
 await check("ed25519 verifies the report bytes and onlyIfNew rejects a replay", async () => {
-  const verifier = reportBindingVerifier({
-    keys: { "test-kid-1": throwawayPublicPem },
-    audience: EOV_AUDIENCE,
-    allowHmac: false,
-  });
+  const verifier = testVerifier();
   const store = onlyNewStore();
   const context = { reportBytes: assertionBytes, replayStore: store, now: assertionNow };
   const ok = await verifier.verify(edAssertion(), context);
@@ -821,6 +843,9 @@ await check("ed25519 verifies the report bytes and onlyIfNew rejects a replay", 
   assert.equal(ok.claims.iss, "geodatatrack-dev");
   assert.equal(ok.claims.ai_consent, true);
   assert.equal(ok.claims.primary_consent, true);
+  assert.equal(ok.claims.report_id, 41);
+  assert.equal(ok.claims.consent_at, "2026-11-09 18:00:00");
+  assert.equal(ok.claims.contract, "report-bytes-v1.1");
   const replay = await verifier.verify(edAssertion(), context);
   assert.equal(replay.reason, "replay_rejected");
   const mismatched = await verifier.verify(edAssertion(), {
@@ -841,14 +866,11 @@ await check("ed25519 verifies the report bytes and onlyIfNew rejects a replay", 
 });
 
 await check("assertion iss, aud, lifetime, consent, and clock skew are enforced", async () => {
-  const verifier = reportBindingVerifier({
-    keys: { "test-kid-1": throwawayPublicPem },
-    audience: EOV_AUDIENCE,
-  });
+  const verifier = testVerifier();
   const base = { reportBytes: assertionBytes, replayStore: onlyNewStore(), now: assertionNow };
   const payload = assertionPayload();
   assert.equal((await verifier.verify(edAssertion({ ...payload, iss: "other-issuer", request_id: "request-iss" }), base)).reason, "issuer_mismatch");
-  assert.equal((await verifier.verify(edAssertion({ ...payload, aud: "other-app", request_id: "request-aud" }), base)).reason, "audience_mismatch");
+  assert.equal((await verifier.verify(edAssertion({ ...payload, aud: "gdt-app:99", request_id: "request-aud" }), base)).reason, "audience_mismatch");
   assert.equal((await verifier.verify(edAssertion({ ...payload, exp: payload.iat + 301, request_id: "request-window" }), base)).reason, "assertion_window");
   assert.equal((await verifier.verify(edAssertion({ ...payload, ai_consent: false, request_id: "request-consent" }), base)).reason, "ai_consent_required");
   const early = await verifier.verify(edAssertion({ ...payload, request_id: "request-early" }), {
@@ -870,52 +892,40 @@ await check("assertion iss, aud, lifetime, consent, and clock skew are enforced"
   zeroCalls();
 });
 
-await check("hmac is ignored unless the config flag is set", async () => {
-  const secret = "throwaway-hmac-secret";
-  const payload = assertionPayload({ request_id: "request-hmac" });
-  const token = hmacAssertion(payload, secret);
-  const blocked = reportBindingVerifier({
-    keys: { "test-kid-1": throwawayPublicPem },
-    allowHmac: false,
-    hmacSecret: secret,
-  });
-  assert.equal((await blocked.verify(token, {
-    reportBytes: assertionBytes,
-    replayStore: onlyNewStore(),
-    now: assertionNow,
-  })).reason, "hmac_disabled");
-  const allowed = reportBindingVerifier({
-    keys: {},
-    allowHmac: true,
-    hmacSecret: secret,
-    audience: EOV_AUDIENCE,
-  });
-  const ok = await allowed.verify(token, {
-    reportBytes: assertionBytes,
-    replayStore: onlyNewStore(),
-    now: assertionNow,
-  });
-  assert.equal(ok.ok, true);
-  assert.equal(ok.claims.request_id, "request-hmac");
+await check("unknown kid, tampered payload, and a non-EdDSA token are refused", async () => {
+  const verifier = testVerifier();
+  const base = { reportBytes: assertionBytes, replayStore: onlyNewStore(), now: assertionNow };
+  const unknown = await verifier.verify(edAssertion({ ...assertionPayload(), kid: "other-kid", request_id: "request-kid" }), base);
+  assert.equal(unknown.reason, "unknown_kid");
+  const token = edAssertion(assertionPayload({ request_id: "request-tamper" }));
+  const parts = token.split(".");
+  const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  payload.property_id = 999;
+  const tampered = `${parts[0]}.${Buffer.from(canonicalAssertion({ ...assertionPayload(), request_id: "request-tamper", property_id: 999 }), "utf8").toString("base64url")}.${parts[2]}`;
+  const tamperedResult = await verifier.verify(tampered, { ...base, replayStore: onlyNewStore() });
+  assert.equal(tamperedResult.reason, "binding_rejected");
+  const hmacLike = `hmac-sha256.${parts[1]}.${parts[2]}`;
+  assert.equal((await verifier.verify(hmacLike, base)).reason, "binding_rejected");
+  const missingSig = `${parts[0]}.${parts[1]}.`;
+  assert.equal((await verifier.verify(missingSig, base)).reason, "binding_rejected");
+  const v1Shape = `ed25519.${parts[1]}.${parts[2]}`;
+  assert.equal((await verifier.verify(v1Shape, base)).reason, "binding_rejected");
   zeroCalls();
 });
 
 await check("a valid ed25519 assertion still makes no provider call", async () => {
-  const payload = assertionPayload({ request_id: "request-assess", consent_id: "confirm-001" });
+  const payload = assertionPayload({ request_id: "request-assess" });
   const token = edAssertion(payload);
   const body = readyBody({
     binding_token: token,
     report: {
-      report_id: "synthetic-report-1",
+      report_id: "41",
       sha256: payload.sha256,
       byte_length: assertionBytes.length,
       generated_at: "2026-11-08T12:00:00Z",
     },
   });
-  const verifier = reportBindingVerifier({
-    keys: { "test-kid-1": throwawayPublicPem },
-    audience: EOV_AUDIENCE,
-  });
+  const verifier = testVerifier();
   const assessed = await assessEovReport({
     body,
     auth: { kind: "app" },
@@ -929,6 +939,83 @@ await check("a valid ed25519 assertion still makes no provider call", async () =
   assert.equal(assessed.payload.reason, "budget_unapproved");
   assert.equal(assessed.payload.provider_calls, 0);
   assert.equal(assessed.payload.shadow, "forced_off");
+  zeroCalls();
+});
+
+await check("the GDT dev public key decodes to 32 bytes and imports as Ed25519", () => {
+  const raw = Buffer.from(DEV_PUBLIC_KEY_B64U, "base64url");
+  assert.equal(raw.length, 32);
+  assert.equal(raw.toString("base64url"), DEV_PUBLIC_KEY_B64U);
+  const imported = importEd25519Public(DEV_PUBLIC_KEY_B64U);
+  assert.equal(imported != null, true);
+  assert.equal(imported.key.asymmetricKeyType, "ed25519");
+  assert.equal(imported.raw.length, 32);
+  assert.deepEqual(imported.raw, raw);
+  const config = readBindingConfig({
+    CONTEXT: "deploy-preview",
+    EIA_GDT_TRUST_DEV_KEY: "true",
+  });
+  assert.equal(trustDevIssuer({ CONTEXT: "deploy-preview", EIA_GDT_TRUST_DEV_KEY: "true" }), true);
+  assert.equal(config.keys[DEV_KID], DEV_PUBLIC_KEY_B64U);
+  zeroCalls();
+});
+
+await check("a throwaway signature under the GDT dev kid is rejected", async () => {
+  const verifier = reportBindingVerifier({
+    keys: { [DEV_KID]: DEV_PUBLIC_KEY_B64U },
+    audience: TEST_AUD,
+    context: "deploy-preview",
+    trustDevKey: true,
+  });
+  const token = edAssertion({ ...assertionPayload({ kid: DEV_KID, request_id: "request-wrong-key" }) }, otherPrivateKey);
+  // also with the first throwaway pair
+  const token2 = edAssertion({ ...assertionPayload({ kid: DEV_KID, request_id: "request-wrong-key-2" }) }, privateKey);
+  const base = { reportBytes: assertionBytes, replayStore: onlyNewStore(), now: assertionNow };
+  const first = await verifier.verify(token, base);
+  assert.equal(first.ok, false);
+  assert.equal(first.reason, "binding_rejected");
+  const second = await verifier.verify(token2, { ...base, replayStore: onlyNewStore() });
+  assert.equal(second.reason, "binding_rejected");
+  zeroCalls();
+});
+
+await check("the GDT dev key cannot be trusted in the production context", async () => {
+  assert.equal(trustDevIssuer({ CONTEXT: "production", EIA_GDT_TRUST_DEV_KEY: "true" }), false);
+  const productionConfig = readBindingConfig({
+    CONTEXT: "production",
+    EIA_GDT_TRUST_DEV_KEY: "true",
+    EIA_EOV_BINDING_KEYS: JSON.stringify({ [DEV_KID]: DEV_PUBLIC_KEY_B64U }),
+  });
+  assert.equal(productionConfig.keys[DEV_KID], undefined);
+  const injected = reportBindingVerifier({
+    keys: { [DEV_KID]: DEV_PUBLIC_KEY_B64U },
+    audience: TEST_AUD,
+    context: "production",
+    trustDevKey: true,
+  });
+  assert.equal(injected.kind, "issuer_unavailable");
+  const underDevKid = edAssertion(assertionPayload({ kid: DEV_KID, request_id: "request-prod-dev" }));
+  assert.equal((await injected.verify(underDevKid, {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  })).reason, "issuer_unavailable");
+  const productionIssuer = reportBindingVerifier({
+    keys: { "test-kid-1": throwawayPublicPem },
+    audience: TEST_AUD,
+    context: "production",
+  });
+  const okShape = edAssertion(assertionPayload({ request_id: "request-prod-iss" }));
+  const refused = await productionIssuer.verify(okShape, {
+    reportBytes: assertionBytes,
+    replayStore: onlyNewStore(),
+    now: assertionNow,
+  });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, "issuer_not_for_production");
+  const noFlag = readBindingConfig({ CONTEXT: "deploy-preview" });
+  assert.equal(noFlag.keys[DEV_KID], undefined);
+  assert.equal(trustDevIssuer({ CONTEXT: "deploy-preview" }), false);
   zeroCalls();
 });
 
